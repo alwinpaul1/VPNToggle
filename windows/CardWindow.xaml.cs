@@ -60,6 +60,12 @@ public sealed class CardViewModel : INotifyPropertyChanged
     string buttonText = "Connect";
     public string ButtonText { get => buttonText; set => Set(ref buttonText, value); }
 
+    string hoverTitle = "";
+    public string HoverTitle { get => hoverTitle; set => Set(ref hoverTitle, value); }
+
+    string hoverDetail = "";
+    public string HoverDetail { get => hoverDetail; set => Set(ref hoverDetail, value); }
+
     Brush buttonBrush = Brushes.SteelBlue;
     public Brush ButtonBrush { get => buttonBrush; set => Set(ref buttonBrush, value); }
 
@@ -107,18 +113,16 @@ public partial class CardWindow : Window
         menu.IsOpen = true;
     }
 
-    /// Opens just above the system tray (or below it when the taskbar is at the top).
-    public void ShowNearTray()
+    /// Opens just above the taskbar (or below it when the taskbar is at the top), centred on the tray icon.
+    public void ShowNearTray(System.Drawing.Point iconPixel)
     {
         Opacity = 0;
         Show();
         UpdateLayout();
-        var wa = SystemParameters.WorkArea;
-        var screen = new Rect(0, 0, SystemParameters.PrimaryScreenWidth, SystemParameters.PrimaryScreenHeight);
-        Left = wa.Right - ActualWidth - 12;
-        var taskbarOnTop = wa.Top > screen.Top;
-        Top = taskbarOnTop ? wa.Top + 12 : wa.Bottom - ActualHeight - 12;
-        if (wa.Left > screen.Left) Left = wa.Left + 12; // taskbar on the left
+        var place = TrayPlacement.Near(this, iconPixel, ActualWidth, ActualHeight, gap: 12);
+        Left = place.X;
+        Top = place.Y;
+        var taskbarOnTop = SystemParameters.WorkArea.Top > 0;
 
         Activate();
         var slide = new DoubleAnimation(taskbarOnTop ? -12 : 12, 0, TimeSpan.FromMilliseconds(220))

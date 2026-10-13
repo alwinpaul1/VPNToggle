@@ -25,6 +25,7 @@ cat > $APP/Contents/Info.plist <<PLIST
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
+  <key>NSCameraUsageDescription</key><string>VPNToggle uses the camera only to read the 2FA QR code you hold up to it.</string>
   <key>CFBundleURLTypes</key><array><dict>
     <key>CFBundleURLName</key><string>com.alwinpaul.vpntoggle</string>
     <key>CFBundleURLSchemes</key><array><string>vpntoggle</string></array>

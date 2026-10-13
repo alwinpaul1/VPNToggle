@@ -19,6 +19,7 @@ public sealed class AppController : IDisposable
     readonly NotifyIcon tray = new();
     readonly CardViewModel vm = new();
     readonly CardWindow card;
+    readonly HoverWindow hover;
     readonly Settings settings = Settings.Load();
     readonly Dispatcher ui = Dispatcher.CurrentDispatcher;
     readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(15) };
@@ -43,6 +44,7 @@ public sealed class AppController : IDisposable
     public AppController()
     {
         card = new CardWindow(vm);
+        hover = new HoverWindow(vm);
         card.ToggleRequested += Toggle;
         card.CredentialsRequested += EditCredentials;
         card.QuitRequested += Quit;
@@ -58,9 +60,13 @@ public sealed class AppController : IDisposable
         };
 
         tray.Visible = true;
+        // The hover card stands in for the tray tooltip, so the plain tooltip stays empty.
+        tray.Text = "";
+        tray.MouseMove += (_, _) => hover.PointerOverIcon(() => card.IsVisible);
         tray.MouseUp += (_, e) =>
         {
             if (e.Button != MouseButtons.Left) return;
+            hover.HidePeek();
             // A click on the icon first deactivates (hides) an open card; do not reopen it straight away.
             if (card.IsVisible || (DateTime.Now - card.HiddenAt).TotalMilliseconds < 300) { card.HideCard(); return; }
             OpenCard();
@@ -92,12 +98,32 @@ public sealed class AppController : IDisposable
             EditCredentials();
     }
 
+    /// vpntoggle://connect, disconnect, toggle, show (also --connect etc. on the command line).
+    public void Handle(string command)
+    {
+        Log.Write($"command: {command}");
+        state = Cisco.State();
+        Render();
+        switch (command)
+        {
+            case "connect" when state != VpnState.Connected:
+            case "disconnect" when state == VpnState.Connected:
+            case "toggle":
+                Toggle();
+                break;
+            case "show":
+                OpenCard();
+                break;
+        }
+    }
+
     void OpenCard()
     {
         vm.TwoFactor = Secrets.Get("totp") != null ? "Automatic" : "Asks for code";
         vm.SetAutoReconnectSilently(settings.AutoReconnect);
         Refresh();
-        card.ShowNearTray();
+        hover.HidePeek();
+        card.ShowNearTray(System.Windows.Forms.Cursor.Position);
     }
 
     void EditCredentials()
@@ -163,9 +189,11 @@ public sealed class AppController : IDisposable
         vm.ButtonText = connected ? "Disconnect" : dropped ? "Reconnect now" : "Connect";
         vm.ButtonBrush = new WpfBrush(connected ? MediaColor.FromRgb(0xC4, 0x2B, 0x1C) : MediaColor.FromRgb(0x00, 0x67, 0xC0));
 
-        // Hover text on the tray icon (Windows caps it at 127 characters).
-        var tip = connected ? $"BTU VPN: Connected\n{ip} · for {duration}" : $"BTU VPN: {title}";
-        tray.Text = tip.Length > 127 ? tip[..127] : tip;
+        vm.HoverTitle = connected ? "VPN connected" : title;
+        vm.HoverDetail = connected ? $"{ip} · for {duration}"
+            : working ? "Please wait"
+            : dropped ? (settings.AutoReconnect ? "Reconnecting automatically…" : "Reconnect when you are ready")
+            : "Click for details";
         SetTrayIcon(working ? Blue : connected ? Green : dropped ? Orange : (Color?)null);
     }
 

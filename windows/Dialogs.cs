@@ -97,7 +97,21 @@ public static class Dialogs
                 Message("No usable 2FA secret found", "The image needs one readable QR code with the BTU entry. Export only that account.");
             }
         };
-        panel.Children.Add(qr);
+        var cam = new Button { Content = "Scan with camera…", Style = (Style)Application.Current.Resources["SecondaryButton"], Margin = new Thickness(8, 0, 0, 0) };
+        cam.Click += (_, _) =>
+        {
+            var scanner = new CameraScanWindow { Owner = w };
+            if (scanner.ShowDialog() == true && scanner.Result != null)
+            {
+                totp.Password = scanner.Result;
+                Message("2FA secret read", "Click Save to store it.");
+            }
+        };
+        var qrRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
+        qr.Margin = new Thickness(0);
+        qrRow.Children.Add(qr);
+        qrRow.Children.Add(cam);
+        panel.Children.Add(qrRow);
 
         var saved = false;
         panel.Children.Add(Buttons(w, "Save", () =>

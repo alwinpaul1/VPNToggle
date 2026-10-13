@@ -1,3 +1,4 @@
+import AVFoundation
 import Cocoa
 import CoreImage
 import CryptoKit
@@ -6,6 +7,7 @@ import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 import UserNotifications
+import Vision
 
 // MARK: - Settings
 
@@ -486,9 +488,26 @@ final class HoverController {
 final class QRPicker: NSObject {
     weak var target: NSTextField?
 
-    func button(for field: NSTextField) -> NSButton {
+    let scanner = QRCameraScanner()
+
+    func buttons(for field: NSTextField) -> NSView {
         target = field
-        return NSButton(title: "Read QR image…", target: self, action: #selector(pick))
+        let row = NSStackView(views: [
+            NSButton(title: "Read QR image…", target: self, action: #selector(pick)),
+            NSButton(title: "Scan with camera…", target: self, action: #selector(scan)),
+        ])
+        row.spacing = 8
+        return row
+    }
+
+    @objc func scan() {
+        scanner.scan { [weak self] text in
+            self?.target?.stringValue = text
+            let a = NSAlert()
+            a.messageText = "2FA secret read"
+            a.informativeText = "Click Save to store it."
+            a.runModal()
+        }
     }
 
     @objc func pick() {
@@ -506,6 +525,138 @@ final class QRPicker: NSObject {
             a.informativeText = "The image needs one readable QR code that contains the BTU entry. If the export holds several accounts, export only the BTU one."
         }
         a.runModal()
+    }
+}
+
+/// Live camera QR scanner: hold the Google Authenticator export QR up to the camera. It stops at the
+/// first QR code that holds a usable 2FA secret and ignores any other.
+final class QRCameraScanner: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, NSWindowDelegate {
+    var session: AVCaptureSession?
+    var window: NSPanel?
+    let hint = NSTextField(labelWithString: "")
+    let queue = DispatchQueue(label: "qr-camera")
+    var onResult: ((String) -> Void)?
+    var result: String?
+    var lastScan = Date.distantPast
+
+    func scan(onResult: @escaping (String) -> Void) {
+        self.onResult = onResult
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            open()
+        case .notDetermined:
+            // The answer arrives off the main thread; the modal run loop below still services the main queue.
+            AVCaptureDevice.requestAccess(for: .video) { ok in DispatchQueue.main.async { ok ? self.open() : self.denied() } }
+        default:
+            denied()
+        }
+    }
+
+    func denied() {
+        let a = NSAlert()
+        a.messageText = "No camera access"
+        a.informativeText = "Allow VPNToggle in System Settings → Privacy & Security → Camera, or use Read QR image… instead."
+        a.runModal()
+    }
+
+    func open() {
+        guard let device = AVCaptureDevice.default(for: .video), let input = try? AVCaptureDeviceInput(device: device) else {
+            let a = NSAlert()
+            a.messageText = "No camera found"
+            a.informativeText = "Use Read QR image… with a screenshot of the QR code instead."
+            a.runModal()
+            return
+        }
+        let session = AVCaptureSession()
+        session.sessionPreset = session.canSetSessionPreset(.hd1280x720) ? .hd1280x720 : .high
+        session.addInput(input)
+        let output = AVCaptureVideoDataOutput()
+        output.alwaysDiscardsLateVideoFrames = true
+        output.setSampleBufferDelegate(self, queue: queue)
+        session.addOutput(output)
+        self.session = session
+        result = nil
+
+        // Camera preview, mirrored like a selfie view, with a viewfinder square.
+        let preview = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 390))
+        preview.wantsLayer = true
+        preview.layer?.backgroundColor = NSColor.black.cgColor
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        layer.frame = preview.bounds
+        layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        if let c = layer.connection, c.isVideoMirroringSupported {
+            c.automaticallyAdjustsVideoMirroring = false
+            c.isVideoMirrored = true
+        }
+        preview.layer?.addSublayer(layer)
+        let finder = CAShapeLayer()
+        let side: CGFloat = 230
+        finder.path = CGPath(roundedRect: CGRect(x: (520 - side) / 2, y: (390 - side) / 2 + 10, width: side, height: side),
+                             cornerWidth: 22, cornerHeight: 22, transform: nil)
+        finder.fillColor = nil
+        finder.strokeColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        finder.lineWidth = 3
+        preview.layer?.addSublayer(finder)
+
+        hint.stringValue = "Hold the Google Authenticator export QR code up to the camera"
+        hint.alignment = .center
+        hint.font = .systemFont(ofSize: 13, weight: .medium)
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        cancel.keyEquivalent = "\u{1b}"
+        let bottom = NSStackView(views: [hint, cancel])
+        bottom.orientation = .vertical
+        bottom.spacing = 10
+        bottom.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 16, right: 16)
+
+        let stack = NSStackView(views: [preview, bottom])
+        stack.orientation = .vertical
+        stack.spacing = 0
+        preview.widthAnchor.constraint(equalToConstant: 520).isActive = true
+        preview.heightAnchor.constraint(equalToConstant: 390).isActive = true
+
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
+                            styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.title = "Scan QR code"
+        panel.titlebarAppearsTransparent = true
+        panel.contentView = stack
+        panel.delegate = self
+        panel.center()
+        window = panel
+
+        queue.async { session.startRunning() }
+        NSApp.activate(ignoringOtherApps: true)
+        // Modal, so it works on top of the credentials dialog (itself modal).
+        NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+        queue.async { session.stopRunning() }
+        self.session = nil
+        window = nil
+        if let r = result { onResult?(r) }
+    }
+
+    @objc func cancel() { NSApp.stopModal() }
+    func windowWillClose(_ notification: Notification) { NSApp.stopModal() }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // About eight looks a second is plenty and keeps the CPU quiet.
+        guard result == nil, Date().timeIntervalSince(lastScan) > 0.12,
+              let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        lastScan = Date()
+        let request = VNDetectBarcodesRequest()
+        request.symbologies = [.qr]
+        try? VNImageRequestHandler(cvPixelBuffer: pixels, options: [:]).perform([request])
+        for code in request.results ?? [] {
+            guard let text = code.payloadStringValue else { continue }
+            if TOTP.secretBytes(text) != nil {
+                result = text
+                DispatchQueue.main.async { NSApp.stopModal() }
+                return
+            }
+            DispatchQueue.main.async {
+                self.hint.stringValue = "That QR code holds no usable 2FA secret. Show the export QR for the BTU account."
+            }
+        }
     }
 }
 
@@ -829,14 +980,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if Keychain.get("password") == nil { editCredentials() }
     }
 
-    // Click opens the card; option-click toggles straight away.
+    // A click opens (or closes) the card.
     @objc func clicked() {
         hover.suppressed = true
         hover.hide()
-        if NSApp.currentEvent?.modifierFlags.contains(.option) == true && NSApp.currentEvent?.type == .leftMouseUp {
-            toggle()
-            return
-        }
         if card.isVisible { closeCard(); return }
         openCard()
     }
@@ -1053,10 +1200,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             [NSTextField(labelWithString: "Password"), pass],
             [NSTextField(labelWithString: "PIN"), pin],
             [NSTextField(labelWithString: "2FA secret"), totp],
-            [NSGridCell.emptyContentView, qrPicker.button(for: totp)],
+            [NSGridCell.emptyContentView, qrPicker.buttons(for: totp)],
         ])
         grid.rowSpacing = 8
-        grid.frame = NSRect(x: 0, y: 0, width: 360, height: 230)
+        grid.frame = NSRect(x: 0, y: 0, width: 400, height: 230)
 
         let a = NSAlert()
         a.messageText = "VPN Credentials"
