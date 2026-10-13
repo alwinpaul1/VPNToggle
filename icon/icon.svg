@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2F7BF6"/>
+      <stop offset="1" stop-color="#1239A6"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCE7FF"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#06205F" flood-opacity="0.45"/>
+    </filter>
+    <filter id="tile" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <!-- tile on Apple's 824 px icon grid -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#gloss)"/>
+  <!-- concentric network rings -->
+  <g fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="14">
+    <circle cx="512" cy="540" r="250"/>
+    <circle cx="512" cy="540" r="340"/>
+  </g>
+  <!-- shield -->
+  <path filter="url(#drop)" fill="url(#shield)"
+        d="M512 232 C 590 282 668 302 742 306 C 748 520 690 690 512 792 C 334 690 276 520 282 306 C 356 302 434 282 512 232 Z"/>
+  <!-- padlock -->
+  <path d="M452 492 V 450 a60 60 0 0 1 120 0 V 492" fill="none" stroke="#1D4FD0" stroke-width="30" stroke-linecap="round"/>
+  <rect x="418" y="486" width="188" height="150" rx="30" fill="#1D4FD0"/>
+  <circle cx="512" cy="548" r="20" fill="#FFFFFF"/>
+  <rect x="502" y="556" width="20" height="44" rx="10" fill="#FFFFFF"/>
+</svg>

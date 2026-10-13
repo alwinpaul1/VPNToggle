@@ -1,0 +1,16 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="TextSecondary" Color="#C5FFFFFF"/>
+    <SolidColorBrush x:Key="TextTertiary" Color="#87FFFFFF"/>
+    <SolidColorBrush x:Key="CardFill" Color="#0DFFFFFF"/>
+    <SolidColorBrush x:Key="CardStroke" Color="#19000000"/>
+    <SolidColorBrush x:Key="SubtleFill" Color="#0FFFFFFF"/>
+    <SolidColorBrush x:Key="SubtleFillHover" Color="#18FFFFFF"/>
+    <SolidColorBrush x:Key="SurfaceFallback" Color="#2C2C2C"/>
+    <SolidColorBrush x:Key="SurfaceStroke" Color="#33FFFFFF"/>
+    <SolidColorBrush x:Key="SwitchOff" Color="#8BFFFFFF"/>
+    <SolidColorBrush x:Key="InputFill" Color="#0DFFFFFF"/>
+    <SolidColorBrush x:Key="Accent" Color="#1F7BD6"/>
+    <SolidColorBrush x:Key="Danger" Color="#E0453A"/>
+</ResourceDictionary>

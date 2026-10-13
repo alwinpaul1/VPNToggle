@@ -1,0 +1,6 @@
+# build output
+build/
+windows/bin/
+windows/obj/
+windows/publish/
+.DS_Store

@@ -1,0 +1,145 @@
+<Window x:Class="VPNToggle.CardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="BTU VPN" Width="340" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False" Topmost="True"
+        Background="Transparent" UseLayoutRounding="True">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" GlassFrameThickness="-1" ResizeBorderThickness="0"
+                            CornerRadius="0" UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Border BorderBrush="{DynamicResource SurfaceStroke}" BorderThickness="0">
+        <StackPanel x:Name="Root" Margin="18,16,18,18">
+            <StackPanel.RenderTransform>
+                <TranslateTransform x:Name="Slide"/>
+            </StackPanel.RenderTransform>
+
+            <!-- Header -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Image Source="/app.ico" Width="32" Height="32" RenderOptions.BitmapScalingMode="HighQuality"/>
+                <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+                    <TextBlock Text="BTU VPN" FontSize="14" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding Host}" FontSize="12" Foreground="{DynamicResource TextSecondary}"/>
+                </StackPanel>
+                <Button x:Name="MoreButton" Grid.Column="2" Style="{StaticResource IconButton}" Click="More_Click" ToolTip="More">
+                    <TextBlock Text="&#xE712;" FontFamily="{StaticResource Icons}" FontSize="14"/>
+                </Button>
+            </Grid>
+
+            <!-- Status orb: click it to toggle, like a quick-settings tile -->
+            <Grid Margin="0,22,0,0" HorizontalAlignment="Center">
+                <Ellipse Width="92" Height="92" Fill="{Binding Tint}" Opacity="0.45"
+                         Visibility="{Binding Glow, Converter={StaticResource BoolToVis}}">
+                    <Ellipse.Effect>
+                        <BlurEffect Radius="30"/>
+                    </Ellipse.Effect>
+                </Ellipse>
+                <Button Click="Toggle_Click" Cursor="Hand" IsEnabled="{Binding NotBusy}">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Grid>
+                                <Ellipse x:Name="Orb" Width="88" Height="88" Fill="{Binding Tint}"/>
+                                <Ellipse Width="88" Height="88" StrokeThickness="1" Stroke="#40FFFFFF">
+                                    <Ellipse.Fill>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                            <GradientStop Color="#30FFFFFF" Offset="0"/>
+                                            <GradientStop Color="#00FFFFFF" Offset="0.6"/>
+                                        </LinearGradientBrush>
+                                    </Ellipse.Fill>
+                                </Ellipse>
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Orb" Property="Opacity" Value="0.9"/></Trigger>
+                                <Trigger Property="IsPressed" Value="True"><Setter TargetName="Orb" Property="Opacity" Value="0.75"/></Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <Grid>
+                        <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource Icons}" FontSize="32" Foreground="White"
+                                   Visibility="{Binding NotBusy, Converter={StaticResource BoolToVis}}"/>
+                        <!-- spinner while connecting -->
+                        <Path Stroke="White" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              Width="32" Height="32" Data="M16,2 A14,14 0 1 1 2,16" RenderTransformOrigin="0.5,0.5"
+                              Visibility="{Binding Busy, Converter={StaticResource BoolToVis}}">
+                            <Path.RenderTransform>
+                                <RotateTransform x:Name="Spin"/>
+                            </Path.RenderTransform>
+                            <Path.Triggers>
+                                <EventTrigger RoutedEvent="Loaded">
+                                    <BeginStoryboard>
+                                        <Storyboard RepeatBehavior="Forever">
+                                            <DoubleAnimation Storyboard.TargetName="Spin" Storyboard.TargetProperty="Angle"
+                                                             From="0" To="360" Duration="0:0:0.9"/>
+                                        </Storyboard>
+                                    </BeginStoryboard>
+                                </EventTrigger>
+                            </Path.Triggers>
+                        </Path>
+                    </Grid>
+                </Button>
+            </Grid>
+
+            <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+
+            <!-- Details -->
+            <Border Margin="0,18,0,0" CornerRadius="8" Background="{DynamicResource CardFill}"
+                    BorderBrush="{DynamicResource CardStroke}" BorderThickness="1" Padding="12,4">
+                <StackPanel>
+                    <StackPanel.Resources>
+                        <Style x:Key="RowIcon" TargetType="TextBlock">
+                            <Setter Property="FontFamily" Value="{StaticResource Icons}"/>
+                            <Setter Property="FontSize" Value="13"/>
+                            <Setter Property="Width" Value="24"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+                        </Style>
+                        <Style x:Key="RowLabel" TargetType="TextBlock">
+                            <Setter Property="FontSize" Value="13"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+                        </Style>
+                        <Style x:Key="RowValue" TargetType="TextBlock">
+                            <Setter Property="FontSize" Value="13"/>
+                            <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Setter Property="VerticalAlignment" Value="Center"/>
+                            <Setter Property="HorizontalAlignment" Value="Right"/>
+                        </Style>
+                    </StackPanel.Resources>
+
+                    <DockPanel Height="34" Visibility="{Binding Connected, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Style="{StaticResource RowIcon}" Text="&#xE774;"/>
+                        <TextBlock Style="{StaticResource RowLabel}" Text="IP address"/>
+                        <TextBlock Style="{StaticResource RowValue}" Text="{Binding Ip}"/>
+                    </DockPanel>
+                    <DockPanel Height="34" Visibility="{Binding Connected, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Style="{StaticResource RowIcon}" Text="&#xE823;"/>
+                        <TextBlock Style="{StaticResource RowLabel}" Text="Connected for"/>
+                        <TextBlock Style="{StaticResource RowValue}" Text="{Binding Duration}"/>
+                    </DockPanel>
+                    <DockPanel Height="34">
+                        <TextBlock Style="{StaticResource RowIcon}" Text="&#xE8D7;"/>
+                        <TextBlock Style="{StaticResource RowLabel}" Text="Two-factor"/>
+                        <TextBlock Style="{StaticResource RowValue}" Text="{Binding TwoFactor}"/>
+                    </DockPanel>
+                    <DockPanel Height="34">
+                        <TextBlock Style="{StaticResource RowIcon}" Text="&#xE72C;"/>
+                        <TextBlock Style="{StaticResource RowLabel}" Text="Auto-reconnect"/>
+                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                      IsChecked="{Binding AutoReconnect, Mode=TwoWay}"/>
+                    </DockPanel>
+                </StackPanel>
+            </Border>
+
+            <Button Margin="0,16,0,0" Style="{StaticResource PrimaryButton}" Background="{Binding ButtonBrush}"
+                    Content="{Binding ButtonText}" Click="Toggle_Click" IsEnabled="{Binding NotBusy}" IsDefault="True"/>
+        </StackPanel>
+    </Border>
+</Window>
