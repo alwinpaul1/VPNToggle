@@ -172,11 +172,10 @@ enum TOTP {
         return String(format: "%06u", n % 1_000_000)
     }
 
-    /// A code with at least 2 s of validity left, so it does not expire in transit.
+    /// The current code, sent at once: 2FA servers accept codes from a window around now,
+    /// so waiting for the next 30 s step only adds delay.
     static func freshCode(secret: Data) -> String {
-        let left = 30 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 30)
-        if left < 2 { Thread.sleep(forTimeInterval: left + 0.3) }
-        return code(secret: secret)
+        code(secret: secret)
     }
 }
 
@@ -312,6 +311,7 @@ func connect(host: String, group: String, user: String, password: String, pin: S
     var asked: [String: Int] = [:]
     let started = Date()
     var timing: [String] = []   // when each step happened, for the event log
+    var ciscoSteps: [String] = []   // Cisco's own status lines with times, for diagnosing slow connects
     var failure: String?, cancelled = false
     let deadline = Date().addingTimeInterval(180)
     var buf = [UInt8](repeating: 0, count: 4096)
@@ -325,6 +325,9 @@ func connect(host: String, group: String, user: String, password: String, pin: S
         let chunk = String(decoding: buf[0..<n], as: UTF8.self).replacingOccurrences(of: "\r", with: "")
         log += chunk
         pending += chunk
+        for line in chunk.components(separatedBy: "\n") where line.contains(">> ") {
+            ciscoSteps.append(String(format: "%.1fs ", Date().timeIntervalSince(started)) + (line.components(separatedBy: ">> ").last ?? line))
+        }
 
         let tail = (pending.components(separatedBy: "\n").last ?? "").trimmingCharacters(in: .whitespaces)
         let low = tail.lowercased()
@@ -364,8 +367,11 @@ func connect(host: String, group: String, user: String, password: String, pin: S
     }
 
     logEvent("connect timing: " + timing.joined(separator: ", "))
-    if p.isRunning { send("exit"); usleep(300_000) }
-    if p.isRunning { p.terminate() }
+    logEvent("cisco steps: " + ciscoSteps.joined(separator: " | "))
+    // Do not wait for the CLI to exit; the tunnel is already up (or the login is over).
+    if p.isRunning { send("exit") }
+    let cli = p
+    DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if cli.isRunning { cli.terminate() } }
     close(master)
 
     // The CLI may echo answers ("password will echo"), so scrub secrets before the log is shown.
@@ -1175,7 +1181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let deadline = Date().addingTimeInterval(20)
             while Date() < deadline && p.isRunning {
                 if let ip, !tunnelAddresses().contains(ip) { break }
-                usleep(150_000)
+                usleep(50_000)
             }
             let down = ip.map { !tunnelAddresses().contains($0) } ?? false
             return (true, nil, "", down ? .disconnected : nil, nil)

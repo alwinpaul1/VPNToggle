@@ -262,13 +262,9 @@ public static class Totp
         return (n % 1_000_000).ToString("D6");
     }
 
-    /// A code with at least 2 s of validity left, so it does not expire in transit.
-    public static string FreshCode(byte[] secret)
-    {
-        var left = 30 - (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 % 30);
-        if (left < 2) Thread.Sleep(TimeSpan.FromSeconds(left + 0.3));
-        return Code(secret, DateTimeOffset.UtcNow);
-    }
+    /// The current code, sent at once: 2FA servers accept codes from a window around now,
+    /// so waiting for the next 30 s step only adds delay.
+    public static string FreshCode(byte[] secret) => Code(secret, DateTimeOffset.UtcNow);
 }
 
 /// Cisco Secure Client / AnyConnect through its own command-line tool, vpncli.exe.
@@ -446,7 +442,7 @@ public static class Cisco
         while (DateTime.Now < deadline && !p.HasExited)
         {
             if (tunnelIp != null && !TunnelAddresses().Contains(tunnelIp)) break;
-            Thread.Sleep(150);
+            Thread.Sleep(50);
         }
         return tunnelIp != null && !TunnelAddresses().Contains(tunnelIp);
     }
@@ -465,7 +461,7 @@ public static class Cisco
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        using var p = Process.Start(psi)!;
+        var p = Process.Start(psi)!;   // not disposed here: a delayed cleanup below may still stop it
         var stdin = p.StandardInput;
         stdin.AutoFlush = true;
         void Send(string s) { try { stdin.Write(s + "\n"); } catch { } }
@@ -550,8 +546,10 @@ public static class Cisco
         }
 
         Log.Write("connect timing: " + string.Join(", ", timing));
-        if (!p.HasExited) { Send("exit"); p.WaitForExit(500); }
-        if (!p.HasExited) { try { p.Kill(); } catch { } }
+        // Do not wait for the CLI to exit; the tunnel is already up (or the login is over).
+        if (!p.HasExited) Send("exit");
+        var cli = p;
+        _ = Task.Delay(2000).ContinueWith(_ => { try { if (!cli.HasExited) cli.Kill(); } catch { } });
 
         // Scrub secrets in case the CLI echoed an answer.
         var text = log.ToString();
