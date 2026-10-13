@@ -1082,6 +1082,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
     }
 
+    /// Opening the app again (Finder, Spotlight, Launchpad) while it runs shows its card instead of nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !card.isVisible { openCard() }
+        return false
+    }
+
     // Show banners even though the app is (as a menu bar app) rarely frontmost.
     func userNotificationCenter(_ c: UNUserNotificationCenter, willPresent n: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {

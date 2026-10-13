@@ -130,14 +130,24 @@ public partial class CardWindow : Window
     }
 
     /// Opens just above the taskbar (or below it when the taskbar is at the top), centred on the tray icon.
-    public void ShowNearTray(System.Drawing.Point iconPixel)
+    /// With no icon position (launched from Start, a link or the command line) it opens at the tray corner.
+    public void ShowNearTray(System.Drawing.Point? iconPixel)
     {
         Opacity = 0;
         Show();
         UpdateLayout();
-        var place = TrayPlacement.Near(this, iconPixel, ActualWidth, ActualHeight, gap: 12);
-        Left = place.X;
-        Top = place.Y;
+        if (iconPixel is { } px)
+        {
+            var place = TrayPlacement.Near(this, px, ActualWidth, ActualHeight, gap: 12);
+            Left = place.X;
+            Top = place.Y;
+        }
+        else
+        {
+            var wa = SystemParameters.WorkArea;
+            Left = wa.Right - ActualWidth - 12;
+            Top = wa.Top > 0 ? wa.Top + 12 : wa.Bottom - ActualHeight - 12;
+        }
         var taskbarOnTop = SystemParameters.WorkArea.Top > 0;
 
         Activate();

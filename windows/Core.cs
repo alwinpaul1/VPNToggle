@@ -26,6 +26,7 @@ public sealed class Settings
     public string Group { get; set; } = "Anmeldung mit BTU-Account";
     public string Username { get; set; } = "";
     public bool AutoReconnect { get; set; } = true;
+    public bool ShownTrayTip { get; set; }
 
     static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VPNToggle");
     static string FilePath => Path.Combine(Dir, "settings.json");

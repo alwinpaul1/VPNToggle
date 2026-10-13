@@ -119,18 +119,34 @@ public sealed class AppController : IDisposable
                 Toggle();
                 break;
             case "show":
-                OpenCard();
+                OpenCard(nearTray: true);
                 break;
         }
     }
 
-    void OpenCard()
+    /// A hand launch: open the card near the tray, and the first time explain where the app lives.
+    public void FirstShow()
+    {
+        if (!settings.ShownTrayTip)
+        {
+            settings.ShownTrayTip = true;
+            settings.Save();
+            tray.ShowBalloonTip(8000, "VPNToggle is running",
+                "It lives in the system tray by the clock. If you don't see the shield, click ^ and drag it onto the taskbar. " +
+                "Find it again any time in the Start menu.", ToolTipIcon.Info);
+        }
+        if (Secrets.Get("password") != null) OpenCard(nearTray: true);
+    }
+
+    void OpenCard() => OpenCard(nearTray: false);
+
+    void OpenCard(bool nearTray)
     {
         vm.TwoFactor = Secrets.Get("totp") != null ? "Automatic" : "Asks for code";
         vm.SetAutoReconnectSilently(settings.AutoReconnect);
         Refresh(force: ip == null);
         hover.HidePeek();
-        card.ShowNearTray(System.Windows.Forms.Cursor.Position);
+        card.ShowNearTray(nearTray ? null : System.Windows.Forms.Cursor.Position);
     }
 
     void EditCredentials()
@@ -430,7 +446,7 @@ public static class Startup
         set
         {
             using var key = Registry.CurrentUser.CreateSubKey(RunKey);
-            if (value) key.SetValue("VPNToggle", $"\"{Environment.ProcessPath}\"");
+            if (value) key.SetValue("VPNToggle", $"\"{Environment.ProcessPath}\" --startup");
             else key.DeleteValue("VPNToggle", false);
         }
     }
