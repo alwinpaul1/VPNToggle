@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Linq;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -22,10 +23,15 @@ public sealed class AppController : IDisposable
     readonly HoverWindow hover;
     readonly Settings settings = Settings.Load();
     readonly Dispatcher ui = Dispatcher.CurrentDispatcher;
-    readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(15) };
+    readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(3) };
 
     VpnState state = VpnState.Unknown;
-    string? ip, duration;
+    /// The tunnel's address while connected; polling just checks it is still on an interface.
+    string? ip;
+    DateTime? connectedSince;
+    System.Collections.Generic.HashSet<string> lastTunnels = new();
+    DateTime nextSlowCheck = DateTime.MinValue;
+    string? Duration => connectedSince is { } t ? Cisco.FormatDuration((int)(DateTime.Now - t).TotalSeconds) : null;
     bool working;
     string? activity;
     /// True from a successful connect until the user disconnects; a drop in between triggers a reconnect.
@@ -82,11 +88,14 @@ public sealed class AppController : IDisposable
         Theme.Changed += Render;
         poll.Tick += (_, _) => Refresh();
         poll.Start();
+        var tick = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        tick.Tick += (_, _) => { if (card.IsVisible) UpdateClock(); };
+        tick.Start();
         // Cisco drops the tunnel on sleep; check soon after resume so a reconnect starts quickly.
         SystemEvents.PowerModeChanged += (_, e) =>
         {
             if (e.Mode == PowerModes.Resume)
-                ui.BeginInvoke(async () => { await Task.Delay(8000); Refresh(); });
+                ui.BeginInvoke(async () => { await Task.Delay(8000); Refresh(force: true); });
         };
 
         Log.Write("app started");
@@ -102,8 +111,6 @@ public sealed class AppController : IDisposable
     public void Handle(string command)
     {
         Log.Write($"command: {command}");
-        state = Cisco.State();
-        Render();
         switch (command)
         {
             case "connect" when state != VpnState.Connected:
@@ -121,7 +128,7 @@ public sealed class AppController : IDisposable
     {
         vm.TwoFactor = Secrets.Get("totp") != null ? "Automatic" : "Asks for code";
         vm.SetAutoReconnectSilently(settings.AutoReconnect);
-        Refresh();
+        Refresh(force: ip == null);
         hover.HidePeek();
         card.ShowNearTray(System.Windows.Forms.Cursor.Position);
     }
@@ -142,28 +149,43 @@ public sealed class AppController : IDisposable
 
     // --- state ---
 
-    void Refresh()
+    /// Cheap check every 3 s: is the tunnel's address still up? Cisco's slow CLI runs only when the
+    /// answer is unclear (tunnel gone, interfaces changed, nothing known yet) or every 15 s while off.
+    void Refresh(bool force = false)
     {
         if (working) return;
+        var tunnels = Cisco.TunnelAddresses();
+        var changed = !tunnels.SetEquals(lastTunnels);
+        lastTunnels = tunnels;
+        if (ip != null && tunnels.Contains(ip)) { Apply(VpnState.Connected, null); return; }
+        if (!(force || changed || ip != null || DateTime.Now >= nextSlowCheck)) return;
+        nextSlowCheck = DateTime.Now.AddSeconds(15);
         Task.Run(() =>
         {
+            if (working) return;   // a connect/disconnect started meanwhile; it reports the state itself
             var s = Cisco.State();
-            var info = s == VpnState.Connected ? Cisco.Info() : (null, null);
-            ui.BeginInvoke(() =>
-            {
-                if (working) return;
-                if (s != state && state != VpnState.Unknown) Log.Write($"state {state} -> {s}");
-                if (state == VpnState.Connected && s == VpnState.Disconnected && wantConnected)
-                    Notify("VPN dropped", settings.AutoReconnect ? $"Reconnecting to {settings.Host}…" : "Click the tray icon to reconnect.");
-                // A tunnel already up when the app starts (or made by the Cisco app) is kept up too.
-                if (state == VpnState.Unknown && s == VpnState.Connected) wantConnected = true;
-                state = s;
-                (ip, duration) = info;
-                Render();
-                if (s == VpnState.Disconnected && wantConnected && settings.AutoReconnect && reconnectTimer == null)
-                    ScheduleReconnect();
-            });
+            (string? ip, int? seconds)? learned = s == VpnState.Connected && !working ? Cisco.Info() : null;
+            ui.BeginInvoke(() => { if (!working) Apply(s, learned); });
         });
+    }
+
+    void Apply(VpnState s, (string? ip, int? seconds)? learned)
+    {
+        if (s != state && state != VpnState.Unknown) Log.Write($"state {state} -> {s}");
+        if (state == VpnState.Connected && s == VpnState.Disconnected && wantConnected)
+            Notify("VPN dropped", settings.AutoReconnect ? $"Reconnecting to {settings.Host}…" : "Click the tray icon to reconnect.");
+        // A tunnel already up when the app starts (or made by the Cisco app) is kept up too.
+        if (state == VpnState.Unknown && s == VpnState.Connected) wantConnected = true;
+        if (learned is { } l)
+        {
+            ip = l.ip;
+            connectedSince = l.seconds is { } sec ? DateTime.Now.AddSeconds(-sec) : connectedSince ?? DateTime.Now;
+        }
+        if (s != VpnState.Connected) { ip = null; connectedSince = null; }
+        state = s;
+        Render();
+        if (s == VpnState.Disconnected && wantConnected && settings.AutoReconnect && reconnectTimer == null)
+            ScheduleReconnect();
     }
 
     void Render()
@@ -172,11 +194,11 @@ public sealed class AppController : IDisposable
         var dropped = wantConnected && state != VpnState.Connected;
         Color color;
         string title, glyph;
-        if (working) { color = Blue; title = activity ?? "Working…"; glyph = ""; }
-        else if (connected) { color = Green; title = "Connected"; glyph = ""; }
-        else if (dropped) { color = Orange; title = "Connection dropped"; glyph = ""; }
-        else if (state == VpnState.Unknown) { color = Gray; title = "Checking…"; glyph = ""; }
-        else { color = Gray; title = "Not connected"; glyph = ""; }
+        if (working) { color = Blue; title = activity ?? "Working…"; glyph = "\uE7E8"; }
+        else if (connected) { color = Green; title = "Connected"; glyph = "\uE7E8"; }
+        else if (dropped) { color = Orange; title = "Connection dropped"; glyph = "\uE7E8"; }
+        else if (state == VpnState.Unknown) { color = Gray; title = "Checking…"; glyph = "\uE7E8"; }
+        else { color = Gray; title = "Not connected"; glyph = "\uE7E8"; }
 
         vm.Host = settings.Host;
         vm.Title = title;
@@ -185,16 +207,33 @@ public sealed class AppController : IDisposable
         vm.Connected = connected;
         vm.Busy = working;
         vm.Ip = ip ?? "—";
-        vm.Duration = duration ?? "—";
-        vm.ButtonText = connected ? "Disconnect" : dropped ? "Reconnect now" : "Connect";
+        vm.Duration = Duration ?? "—";
+        vm.ButtonText = connected ? "Turn the VPN off" : "Turn the VPN on";
+        var lit = connected || (dropped && !working);
+        var tintBrush = new WpfBrush(MediaColor.FromRgb(color.R, color.G, color.B));
+        var secondary = (Brush)System.Windows.Application.Current.Resources["TextSecondary"];
+        var primary = (Brush)System.Windows.Application.Current.Resources["TextPrimary"];
+        vm.Lit = lit;
+        vm.GlyphBrush = lit ? tintBrush : secondary;
+        vm.TitleBrush = lit ? tintBrush : primary;
+        vm.OutlineBrush = lit ? new WpfBrush(MediaColor.FromArgb(0x8C, color.R, color.G, color.B)) : System.Windows.Media.Brushes.Transparent;
+        UpdateClock();
         vm.ButtonBrush = new WpfBrush(connected ? MediaColor.FromRgb(0xC4, 0x2B, 0x1C) : MediaColor.FromRgb(0x00, 0x67, 0xC0));
 
         vm.HoverTitle = connected ? "VPN connected" : title;
-        vm.HoverDetail = connected ? $"{ip} · for {duration}"
+        vm.HoverDetail = connected ? $"{ip} · for {Duration}"
             : working ? "Please wait"
             : dropped ? (settings.AutoReconnect ? "Reconnecting automatically…" : "Reconnect when you are ready")
             : "Click for details";
         SetTrayIcon(working ? Blue : connected ? Green : dropped ? Orange : (Color?)null);
+    }
+
+    /// The live session timer under "Connected", ticking every second.
+    void UpdateClock()
+    {
+        if (connectedSince is not { } t) { vm.Clock = ""; return; }
+        var d = DateTime.Now - t;
+        vm.Clock = $"{(int)d.TotalHours:00}:{d.Minutes:00}:{d.Seconds:00}";
     }
 
     // --- actions ---
@@ -211,7 +250,8 @@ public sealed class AppController : IDisposable
         wantConnected = false;
         CancelReconnect();
         activity = "Disconnecting…";
-        Run(() => (true, null, Cisco.Disconnect()));
+        var tunnelIp = ip;
+        Run(() => (true, null, "", Cisco.Disconnect(tunnelIp) ? VpnState.Disconnected : null, null));
     }
 
     void CancelReconnect()
@@ -262,10 +302,14 @@ public sealed class AppController : IDisposable
 
         Run(() =>
         {
-            Cisco.QuitGui();
-            System.Threading.Thread.Sleep(800);
+            if (Cisco.QuitGui()) System.Threading.Thread.Sleep(800);   // let the Cisco window close first
             Cisco.SetDefaultGroup(group);
-            return Cisco.Connect(host, group, user, password, pin, totp, () => ui.Invoke(Dialogs.AskCode));
+            var before = Cisco.TunnelAddresses();
+            var r = Cisco.Connect(host, group, user, password, pin, totp, () => ui.Invoke(Dialogs.AskCode));
+            if (!r.ok) return (false, r.message, r.log, null, null);
+            // The new tunnel address, straight from the interfaces; `vpncli stats` only as a fallback.
+            var newIp = Cisco.TunnelAddresses().Except(before).FirstOrDefault() ?? Cisco.Info().ip;
+            return (true, null, r.log, VpnState.Connected, newIp);
         }, (ok, message) =>
         {
             Log.Write(ok ? "connected" : $"connect failed: {message ?? "cancelled"}");
@@ -273,11 +317,7 @@ public sealed class AppController : IDisposable
             {
                 wantConnected = true;
                 CancelReconnect();
-                Task.Run(() =>
-                {
-                    var (newIp, _) = Cisco.Info();
-                    ui.BeginInvoke(() => Notify(auto ? "VPN reconnected" : "VPN connected", $"{settings.Host} · {newIp}"));
-                });
+                Notify(auto ? "VPN reconnected" : "VPN connected", $"{settings.Host} · {ip}");
             }
             else if (!auto || message == null || message.StartsWith("Login rejected"))
             {
@@ -292,21 +332,29 @@ public sealed class AppController : IDisposable
         });
     }
 
-    void Run(Func<(bool ok, string? message, string log)> job, Action<bool, string?>? done = null)
+    /// `seen` is the state the job observed (null = ask Cisco); `newIp` is the tunnel address after a connect.
+    void Run(Func<(bool ok, string? message, string log, VpnState? seen, string? newIp)> job, Action<bool, string?>? done = null)
     {
         working = true;
         Render();
+        Cisco.CancelStatusCheck();   // do not wait seconds behind a background `vpncli state`/`stats`
         Task.Run(() =>
         {
-            var (ok, message, log) = job();
-            var s = Cisco.State();
+            var (ok, message, log, seen, newIp) = job();
+            var s = seen ?? Cisco.State();
             ui.BeginInvoke(() =>
             {
                 working = false;
                 state = s;
+                if (s == VpnState.Connected)
+                {
+                    if (newIp != null) { ip = newIp; connectedSince = DateTime.Now; }
+                }
+                else { ip = null; connectedSince = null; }
+                lastTunnels = Cisco.TunnelAddresses();
                 done?.Invoke(ok, message);
                 Render();
-                Refresh();
+                if (s == VpnState.Connected && ip == null) Refresh(force: true);
                 // Auto-reconnect failures stay quiet until it gives up.
                 if (!ok && message != null && reconnectTimer == null)
                     Dialogs.Message("VPN connection failed", message, log);

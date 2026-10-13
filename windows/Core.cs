@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -260,11 +262,11 @@ public static class Totp
         return (n % 1_000_000).ToString("D6");
     }
 
-    /// A code with at least 5 s of validity left, so it does not expire in transit.
+    /// A code with at least 2 s of validity left, so it does not expire in transit.
     public static string FreshCode(byte[] secret)
     {
         var left = 30 - (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 % 30);
-        if (left < 5) Thread.Sleep(TimeSpan.FromSeconds(left + 0.5));
+        if (left < 2) Thread.Sleep(TimeSpan.FromSeconds(left + 0.3));
         return Code(secret, DateTimeOffset.UtcNow);
     }
 }
@@ -283,6 +285,42 @@ public static class Cisco
     // The Cisco window blocks CLI connects ("Another AnyConnect application is running").
     static readonly string[] GuiProcesses = { "csc_ui", "vpnui" };
 
+    // The status check (`vpncli state`/`stats`) in flight, so a click can cancel it instead of queueing behind it.
+    static readonly object statusLock = new();
+    static Process? statusProcess;
+
+    public static void CancelStatusCheck()
+    {
+        lock (statusLock) { try { statusProcess?.Kill(); } catch { } }
+    }
+
+    /// IPv4 addresses on all network interfaces that are up. Instant, where `vpncli state` starts Cisco's
+    /// CLI and takes seconds; the app watches the tunnel's own address instead.
+    public static HashSet<string> TunnelAddresses()
+    {
+        var set = new HashSet<string>();
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != OperationalStatus.Up) continue;
+                foreach (var a in nic.GetIPProperties().UnicastAddresses)
+                    if (a.Address.AddressFamily == AddressFamily.InterNetwork) set.Add(a.Address.ToString());
+            }
+        }
+        catch { }
+        return set;
+    }
+
+    /// "12m", "1h 05m", "1d 2h 03m".
+    public static string FormatDuration(int seconds)
+    {
+        int d = seconds / 86400, h = seconds / 3600 % 24, m = seconds / 60 % 60;
+        if (d > 0) return $"{d}d {h}h {m:00}m";
+        if (h > 0) return $"{h}h {m:00}m";
+        return $"{Math.Max(m, 1)}m";
+    }
+
     /// Runs `vpncli <args>` and returns its output.
     public static string Run(string args)
     {
@@ -295,10 +333,15 @@ public static class Cisco
             CreateNoWindow = true,
         };
         using var p = Process.Start(psi)!;
-        p.StandardInput.Close();
-        var output = p.StandardOutput.ReadToEndAsync();
-        if (!p.WaitForExit(20_000)) { try { p.Kill(); } catch { } }
-        return output.Wait(2_000) ? output.Result : "";
+        lock (statusLock) statusProcess = p;
+        try
+        {
+            p.StandardInput.Close();
+            var output = p.StandardOutput.ReadToEndAsync();
+            if (!p.WaitForExit(20_000)) { try { p.Kill(); } catch { } }
+            return output.Wait(2_000) ? output.Result : "";
+        }
+        finally { lock (statusLock) if (statusProcess == p) statusProcess = null; }
     }
 
     public static VpnState State()
@@ -310,10 +353,11 @@ public static class Cisco
         return VpnState.Busy;
     }
 
-    /// Client IP and connected time from `vpncli stats`, e.g. ("141.43.0.10", "1h 05m").
-    public static (string? ip, string? duration) Info()
+    /// Client IP and seconds connected from `vpncli stats`, e.g. ("141.43.0.10", 3900). Slow.
+    public static (string? ip, int? seconds) Info()
     {
-        string? ip = null, duration = null;
+        string? ip = null;
+        int? seconds = null;
         foreach (var raw in Run("stats").Split('\n'))
         {
             var parts = raw.Split(':', 2);
@@ -327,18 +371,21 @@ public static class Cisco
                 var m = Regex.Match(value, @"(?:(\d+)\s*day.*?\s)?(\d+):(\d+):(\d+)");
                 if (!m.Success) continue;
                 var days = m.Groups[1].Success ? int.Parse(m.Groups[1].Value) : 0;
-                int h = int.Parse(m.Groups[2].Value), min = int.Parse(m.Groups[3].Value);
-                duration = days > 0 ? $"{days}d {h}h {min:00}m" : h > 0 ? $"{h}h {min:00}m" : $"{Math.Max(min, 1)}m";
+                int h = int.Parse(m.Groups[2].Value), min = int.Parse(m.Groups[3].Value), sec = int.Parse(m.Groups[4].Value);
+                seconds = ((days * 24 + h) * 60 + min) * 60 + sec;
             }
         }
-        return (ip, duration);
+        return (ip, seconds);
     }
 
-    public static void QuitGui()
+    /// Returns true when a Cisco window was running (and has been closed).
+    public static bool QuitGui()
     {
+        var any = false;
         foreach (var name in GuiProcesses)
             foreach (var p in Process.GetProcessesByName(name))
-                try { p.Kill(); } catch { }
+                try { p.Kill(); any = true; } catch { }
+        return any;
     }
 
     static IEnumerable<string> PreferenceFiles()
@@ -380,7 +427,29 @@ public static class Cisco
         }
     }
 
-    public static string Disconnect() => Run("disconnect");
+    /// Starts `vpncli disconnect` and returns as soon as the tunnel's address is gone; Cisco's CLI may
+    /// still be tidying up. Returns true when the tunnel is known to be down.
+    public static bool Disconnect(string? tunnelIp)
+    {
+        if (Cli == null) return false;
+        var psi = new ProcessStartInfo(Cli, "disconnect")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        var p = Process.Start(psi)!;
+        p.StandardInput.Close();
+        _ = p.StandardOutput.ReadToEndAsync();  // keep its output pipe drained
+        var deadline = DateTime.Now.AddSeconds(20);
+        while (DateTime.Now < deadline && !p.HasExited)
+        {
+            if (tunnelIp != null && !TunnelAddresses().Contains(tunnelIp)) break;
+            Thread.Sleep(150);
+        }
+        return tunnelIp != null && !TunnelAddresses().Contains(tunnelIp);
+    }
 
     /// Connects with `vpncli -s`, answering each prompt as it appears. If prompts never show (some builds
     /// buffer them when output is redirected), it falls back to sending the answers in BTU's known order:
@@ -416,6 +485,7 @@ public static class Cisco
         var cancelled = false;
         var blindSent = false;
         var start = DateTime.Now;
+        var timing = new List<string>();   // when each step happened, for the event log
         var deadline = start.AddSeconds(180);
         var buf = new char[4096];
         Task<int>? read = null;
@@ -472,12 +542,14 @@ public static class Cisco
                 if (asked[kind] > 2) { failure = "Login rejected. Check your password and 2FA code."; break; }
                 pending.Clear();
                 Send(reply);
+                timing.Add($"{kind} {(DateTime.Now - start).TotalSeconds:0.0}s");
             }
             var all = log.ToString();
-            if (all.Contains("state: Connected")) break;
+            if (all.Contains("state: Connected")) { timing.Add($"connected {(DateTime.Now - start).TotalSeconds:0.0}s"); break; }
             if (all.Contains("Login failed")) { failure = "Login rejected. Check your password and 2FA code."; break; }
         }
 
+        Log.Write("connect timing: " + string.Join(", ", timing));
         if (!p.HasExited) { Send("exit"); p.WaitForExit(500); }
         if (!p.HasExited) { try { p.Kill(); } catch { } }
 
@@ -488,7 +560,8 @@ public static class Cisco
 
         if (cancelled) return (false, null, text);
         if (failure != null) return (false, failure, text);
-        if (State() == VpnState.Connected) return (true, null, text);
+        // Cisco's own "state: Connected" line is enough; skip the slow `vpncli state` round trip.
+        if (text.Contains("state: Connected") || State() == VpnState.Connected) return (true, null, text);
         var cliError = text.Split('\n').FirstOrDefault(l => l.Contains(">> error:"))?.Split(">> error:").Last().Trim();
         return (false, cliError ?? $"Could not connect to {host}.", text);
     }

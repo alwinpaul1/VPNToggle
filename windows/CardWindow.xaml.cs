@@ -39,6 +39,22 @@ public sealed class CardViewModel : INotifyPropertyChanged
     public bool NotBusy => !busy;
     public bool Glow => connected && !busy;
 
+    bool lit;
+    /// Connected or dropped: the ring shows in the status colour.
+    public bool Lit { get => lit; set => Set(ref lit, value); }
+
+    Brush glyphBrush = Brushes.Gray;
+    public Brush GlyphBrush { get => glyphBrush; set => Set(ref glyphBrush, value); }
+
+    Brush titleBrush = Brushes.White;
+    public Brush TitleBrush { get => titleBrush; set => Set(ref titleBrush, value); }
+
+    Brush outlineBrush = Brushes.Transparent;
+    public Brush OutlineBrush { get => outlineBrush; set => Set(ref outlineBrush, value); }
+
+    string clock = "";
+    public string Clock { get => clock; set => Set(ref clock, value); }
+
     string? ip;
     public string? Ip { get => ip; set => Set(ref ip, value); }
 

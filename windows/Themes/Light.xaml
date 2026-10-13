@@ -13,4 +13,6 @@
     <SolidColorBrush x:Key="InputFill" Color="#FFFFFFFF"/>
     <SolidColorBrush x:Key="Accent" Color="#005FB8"/>
     <SolidColorBrush x:Key="Danger" Color="#C42B1C"/>
+    <SolidColorBrush x:Key="OrbFill" Color="#B3FFFFFF"/>
+    <SolidColorBrush x:Key="OrbFillHover" Color="#E6FFFFFF"/>
 </ResourceDictionary>

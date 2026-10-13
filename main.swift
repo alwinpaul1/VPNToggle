@@ -172,10 +172,10 @@ enum TOTP {
         return String(format: "%06u", n % 1_000_000)
     }
 
-    /// A code with at least 5 s of validity left, so it does not expire in transit.
+    /// A code with at least 2 s of validity left, so it does not expire in transit.
     static func freshCode(secret: Data) -> String {
         let left = 30 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 30)
-        if left < 5 { Thread.sleep(forTimeInterval: left + 0.5) }
+        if left < 2 { Thread.sleep(forTimeInterval: left + 0.3) }
         return code(secret: secret)
     }
 }
@@ -185,6 +185,16 @@ enum TOTP {
 enum VPNState { case connected, disconnected, busy, unknown }
 
 /// Runs `vpn <args>` and returns its combined output.
+/// The status check (`vpn state`/`stats`) in flight, so a click can cancel it instead of queueing behind it.
+let statusLock = NSLock()
+var statusProcess: Process?
+
+func cancelStatusCheck() {
+    statusLock.lock()
+    statusProcess?.terminate()
+    statusLock.unlock()
+}
+
 func runVPN(_ args: [String]) -> String {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: vpnCLI)
@@ -194,30 +204,57 @@ func runVPN(_ args: [String]) -> String {
     p.standardError = pipe
     p.standardInput = FileHandle.nullDevice
     do { try p.run() } catch { return "could not start \(vpnCLI): \(error)" }
+    statusLock.lock(); statusProcess = p; statusLock.unlock()
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
+    statusLock.lock(); if statusProcess === p { statusProcess = nil }; statusLock.unlock()
     return String(decoding: data, as: UTF8.self)
 }
 
-/// Client IP and connected time from `vpn stats`, e.g. ("141.43.0.10", "1h 05m").
-func connectionInfo() -> (ip: String?, duration: String?) {
-    var ip: String?, duration: String?
+/// Client IP and seconds connected from `vpn stats`, e.g. ("141.43.0.10", 3900). Slow (~1.3 s).
+func connectionInfo() -> (ip: String?, seconds: Int?) {
+    var ip: String?, seconds: Int?
     for line in runVPN(["stats"]).components(separatedBy: "\n") {
         let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 2, parts[1] != "Not Available" else { continue }
         if parts[0] == "Client Address (IPv4)" { ip = parts[1] }
         if parts[0] == "Duration" {
-            // "00:12:05" or "1 day(s) 02:03:04" -> "12m", "1d 2h 03m"
+            // "00:12:05" or "1 day(s) 02:03:04"
             let hms = parts[1].split(separator: " ").last?.split(separator: ":").compactMap { Int($0) } ?? []
             let days = parts[1].contains("day") ? Int(parts[1].split(separator: " ").first ?? "") ?? 0 : 0
-            if hms.count == 3 {
-                let (h, m) = (hms[0], hms[1])
-                duration = days > 0 ? "\(days)d \(h)h \(String(format: "%02d", m))m"
-                    : h > 0 ? "\(h)h \(String(format: "%02d", m))m" : "\(max(m, 1))m"
-            }
+            if hms.count == 3 { seconds = ((days * 24 + hms[0]) * 60 + hms[1]) * 60 + hms[2] }
         }
     }
-    return (ip, duration)
+    return (ip, seconds)
+}
+
+/// "12m", "1h 05m", "1d 2h 03m".
+func formatDuration(_ seconds: Int) -> String {
+    let (d, h, m) = (seconds / 86400, seconds / 3600 % 24, seconds / 60 % 60)
+    if d > 0 { return "\(d)d \(h)h \(String(format: "%02d", m))m" }
+    if h > 0 { return "\(h)h \(String(format: "%02d", m))m" }
+    return "\(max(m, 1))m"
+}
+
+/// IPv4 addresses on tunnel (utun) interfaces, read from the kernel. Instant, where `vpn state`
+/// starts Cisco's CLI and takes ~2.5 s; so the app watches the tunnel's own address instead.
+func tunnelAddresses() -> Set<String> {
+    var out = Set<String>()
+    var list: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&list) == 0 else { return out }
+    defer { freeifaddrs(list) }
+    var cursor = list
+    while let entry = cursor {
+        let i = entry.pointee
+        cursor = i.ifa_next
+        guard let addr = i.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET),
+              String(cString: i.ifa_name).hasPrefix("utun") else { continue }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+            out.insert(String(cString: host))
+        }
+    }
+    return out
 }
 
 func currentState() -> VPNState {
@@ -273,6 +310,8 @@ func connect(host: String, group: String, user: String, password: String, pin: S
 
     var log = "", pending = ""
     var asked: [String: Int] = [:]
+    let started = Date()
+    var timing: [String] = []   // when each step happened, for the event log
     var failure: String?, cancelled = false
     let deadline = Date().addingTimeInterval(180)
     var buf = [UInt8](repeating: 0, count: 4096)
@@ -315,11 +354,16 @@ func connect(host: String, group: String, user: String, password: String, pin: S
             if asked[kind]! > 2 { failure = "Login rejected. Check your password and 2FA code."; break }
             pending = ""
             send(reply)
+            timing.append("\(kind) \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
         }
-        if log.contains("state: Connected") { break }
+        if log.contains("state: Connected") {
+            timing.append("connected \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+            break
+        }
         if log.contains("Login failed") { failure = "Login rejected. Check your password and 2FA code."; break }
     }
 
+    logEvent("connect timing: " + timing.joined(separator: ", "))
     if p.isRunning { send("exit"); usleep(300_000) }
     if p.isRunning { p.terminate() }
     close(master)
@@ -330,7 +374,8 @@ func connect(host: String, group: String, user: String, password: String, pin: S
     }
     if cancelled { return (false, nil, log) }
     if let failure { return (false, failure, log) }
-    if currentState() == .connected { return (true, nil, log) }
+    // Cisco's own "state: Connected" line is enough; skip the 2.5 s `vpn state` round trip.
+    if log.contains("state: Connected") || currentState() == .connected { return (true, nil, log) }
     // Prefer the CLI's own error line, e.g. ">> error: The requested authentication type is not supported".
     let cliError = log.components(separatedBy: "\n").first { $0.contains(">> error:") }?
         .components(separatedBy: ">> error:").last?.trimmingCharacters(in: .whitespaces)
@@ -668,6 +713,7 @@ final class VPNModel: ObservableObject {
     @Published var activity: String?          // "Connecting…" etc. while a job runs
     @Published var ip: String?
     @Published var duration: String?
+    @Published var since: Date?
     @Published var dropped = false
     @Published var autoReconnect = true
     @Published var launchAtLogin = false
@@ -709,7 +755,7 @@ final class VPNModel: ObservableObject {
 
 struct CardView: View {
     @ObservedObject var m: VPNModel
-    @State private var glow = false
+    @State private var spin = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -717,10 +763,14 @@ struct CardView: View {
             header
             hero
             details
-            actions
         }
         .padding(16)
         .frame(width: 304)
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(m.tint.opacity(m.connected || m.dropped ? 0.55 : 0), lineWidth: 1)
+        )
+        .animation(.smooth(duration: 0.4), value: m.connected)
     }
 
     var header: some View {
@@ -754,42 +804,66 @@ struct CardView: View {
         }
     }
 
-    /// A Control Center style orb: tap it to toggle, like the Wi-Fi button.
+    /// The power switch, NordVPN-style restraint: neutral glass in every state; the state shows in the
+    /// symbol's colour, a slim ring around it, the coloured status word and the card's hairline outline.
     var hero: some View {
-        VStack(spacing: 0) {
-            Button(action: m.onToggle) {
-                ZStack {
-                    if m.activity != nil {
-                        ProgressView().controlSize(.regular)
-                    } else {
-                        Image(systemName: m.symbol)
-                            .font(.system(size: 30, weight: .semibold))
-                            .foregroundStyle(m.state == .connected || m.dropped ? .white : .primary)
-                            .contentTransition(.symbolEffect(.replace))
-                    }
-                }
-                .frame(width: 84, height: 84)
-                .glassEffect(m.connected || m.dropped ? .regular.tint(m.tint).interactive() : .regular.interactive(), in: .circle)
-            }
-            .buttonStyle(.plain)
-            .disabled(m.activity != nil)
-            .background(
+        let busy = m.activity != nil
+        let ring = busy ? Color(red: 0.25, green: 0.52, blue: 1.0) : m.tint
+        return VStack(spacing: 0) {
+            ZStack {
+                // soft halo, only while connected
                 Circle()
-                    .fill(m.tint.opacity(m.connected ? 0.38 : 0))
-                    .frame(width: 84, height: 84)
-                    .blur(radius: 26)
-                    .scaleEffect(glow && !reduceMotion ? 1.25 : 1.0)
-                    .animation(.easeInOut(duration: 2.8).repeatForever(autoreverses: true), value: glow)
-            )
-            .onAppear { glow = true }
-            .padding(.top, 22)
+                    .fill(m.tint.opacity(m.connected ? 0.22 : 0))
+                    .frame(width: 90, height: 90)
+                    .blur(radius: 18)
+                // slim ring: full when connected or dropped, a spinning arc while working
+                Circle()
+                    .trim(from: 0, to: busy ? 0.25 : 1)
+                    .stroke(ring.opacity(busy || m.connected || m.dropped ? 1 : 0),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .frame(width: 98, height: 98)
+                    .rotationEffect(.degrees(busy && spin ? 270 : -90))
+                    .animation(busy ? .linear(duration: 0.9).repeatForever(autoreverses: false) : .smooth(duration: 0.4), value: spin)
+
+                Button(action: m.onToggle) {
+                    Image(systemName: "power")
+                        .font(.system(size: 30, weight: .medium))
+                        .foregroundStyle(m.connected || m.dropped ? AnyShapeStyle(m.tint) : AnyShapeStyle(.secondary))
+                        .frame(width: 84, height: 84)
+                        .glassEffect(.regular.interactive(), in: .circle)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(PressScale())
+                .disabled(busy)
+                .keyboardShortcut(.defaultAction)
+                .accessibilityLabel(m.connected ? "Turn the VPN off" : "Turn the VPN on")
+            }
+            .frame(height: 104)
+            .padding(.top, 20)
+            .onAppear { spin = true }
+            .onChange(of: busy) { _, b in if b { spin = false; DispatchQueue.main.async { spin = true } } }
 
             Text(m.title)
-                .font(.system(size: 19, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(m.connected ? AnyShapeStyle(m.tint) : m.dropped ? AnyShapeStyle(m.tint) : AnyShapeStyle(.primary))
                 .padding(.top, 14)
+            // live session timer while connected
+            if m.connected, let since = m.since {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    Text(sessionClock(ctx.date.timeIntervalSince(since)))
+                        .font(.system(size: 12, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 3)
+            }
         }
         .frame(maxWidth: .infinity)
         .animation(.smooth(duration: 0.3), value: m.title)
+    }
+
+    func sessionClock(_ t: TimeInterval) -> String {
+        let s = max(0, Int(t))
+        return String(format: "%02d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
     }
 
     func row(_ icon: String, _ label: String, _ value: String) -> some View {
@@ -811,7 +885,6 @@ struct CardView: View {
         VStack(spacing: 0) {
             if m.connected {
                 row("network", "IP address", m.ip ?? "—")
-                row("clock", "Connected for", m.duration ?? "—")
             }
             row("key", "Two-factor", m.autoTwoFactor ? "Automatic" : "Asks for code")
             HStack {
@@ -835,21 +908,14 @@ struct CardView: View {
         .padding(.top, 18)
     }
 
-    var actions: some View {
-        VStack(spacing: 8) {
-            Button(action: m.onToggle) {
-                Text(m.connected ? "Disconnect" : (m.dropped ? "Reconnect now" : "Connect"))
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.glassProminent)
-            .tint(m.connected ? Color(red: 0.92, green: 0.27, blue: 0.27) : .accentColor)
-            .controlSize(.large)
-            .disabled(m.activity != nil)
-            .keyboardShortcut(.defaultAction)
+}
 
-        }
-        .padding(.top, 16)
+/// Shrinks a little while pressed, like a physical button.
+struct PressScale: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 
@@ -914,7 +980,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return w.convertToScreen(b.convert(b.bounds, to: nil))
     }
     var state: VPNState = .unknown
-    var info: (ip: String?, duration: String?) = (nil, nil)
+    /// The tunnel's address while connected; polling just checks it is still on an interface.
+    var vpnIP: String?
+    var connectedSince: Date?
+    var lastTunnels = Set<String>()
+    var nextSlowCheck = Date.distantPast
     /// True from a successful connect until the user disconnects; a drop in between triggers a reconnect.
     var wantConnected = false
     var reconnectAttempts = 0
@@ -945,7 +1015,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             openCard()
             return
         }
-        state = currentState()
         render()
         switch action {
         case "connect" where state != .connected, "disconnect" where state == .connected, "toggle": toggle()
@@ -970,10 +1039,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         hover.blocked = { [weak self] in self?.card.isVisible ?? false }
         render()
         refresh()
-        Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
+        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
         // Cisco drops the tunnel on sleep; check soon after wake so a reconnect starts quickly.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) {
-            [weak self] _ in DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self?.refresh() }
+            [weak self] _ in DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self?.refresh(force: true) }
         }
         logEvent("app started")
         Notify.setUp(delegate: self)
@@ -993,7 +1062,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.launchAtLogin = LoginItem.enabled
         model.autoReconnect = autoReconnect
         model.autoTwoFactor = Keychain.get("totp") != nil
-        refresh()
+        refresh(force: vpnIP == nil)
         hover.hide()
         card.show(under: f, makeKey: true)
         // Close on a click anywhere else, like a menu.
@@ -1019,30 +1088,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         logEvent("auto-reconnect \(autoReconnect ? "on" : "off")")
     }
 
-    func refresh() {
+    /// Cheap check every 3 s: is the tunnel's address still up? Cisco's slow CLI runs only when the
+    /// answer is unclear (tunnel gone, interfaces changed, nothing known yet) or every 15 s while off.
+    func refresh(force: Bool = false) {
         guard !working else { return }
+        let tunnels = tunnelAddresses()
+        let changed = tunnels != lastTunnels
+        lastTunnels = tunnels
+        if let ip = vpnIP, tunnels.contains(ip) {
+            apply(.connected, learned: nil)
+            return
+        }
+        guard force || changed || vpnIP != nil || Date() >= nextSlowCheck else { return }
+        nextSlowCheck = Date().addingTimeInterval(15)
         queue.async {
+            if self.working { return }   // a connect/disconnect started meanwhile; it reports the state itself
             let s = currentState()
-            let info = s == .connected ? connectionInfo() : (nil, nil)
-            DispatchQueue.main.async {
-                guard !self.working else { return }
-                if s != self.state && self.state != .unknown { logEvent("state \(self.state) -> \(s)") }
-                if self.state == .connected && s == .disconnected && self.wantConnected {
-                    Notify.post("VPN dropped", self.autoReconnect ? "Reconnecting to \(Prefs.host)…" : "Click the menu bar icon to reconnect.")
-                }
-                // A tunnel already up when the app starts (after a restart, or made by the Cisco GUI) is kept up too.
-                if self.state == .unknown && s == .connected { self.wantConnected = true }
-                self.state = s
-                self.info = info
-                self.render()
-                if s == .disconnected && self.wantConnected && self.autoReconnect && self.reconnectTimer == nil {
-                    self.scheduleReconnect()
-                }
-            }
+            let learned = s == .connected && !self.working ? connectionInfo() : nil
+            DispatchQueue.main.async { if !self.working { self.apply(s, learned: learned) } }
+        }
+    }
+
+    func apply(_ s: VPNState, learned: (ip: String?, seconds: Int?)?) {
+        if s != state && state != .unknown { logEvent("state \(state) -> \(s)") }
+        if state == .connected && s == .disconnected && wantConnected {
+            Notify.post("VPN dropped", autoReconnect ? "Reconnecting to \(Prefs.host)…" : "Click the menu bar icon to reconnect.")
+        }
+        // A tunnel already up when the app starts (after a restart, or made by the Cisco GUI) is kept up too.
+        if state == .unknown && s == .connected { wantConnected = true }
+        if let learned {
+            vpnIP = learned.ip
+            connectedSince = learned.seconds.map { Date().addingTimeInterval(-Double($0)) } ?? connectedSince ?? Date()
+        }
+        if s != .connected { vpnIP = nil; connectedSince = nil }
+        state = s
+        render()
+        if s == .disconnected && wantConnected && autoReconnect && reconnectTimer == nil {
+            scheduleReconnect()
         }
     }
 
     func render() {
+        let info = (ip: vpnIP, duration: connectedSince.map { formatDuration(Int(Date().timeIntervalSince($0))) })
         let dropped = wantConnected && state != .connected
         let (symbol, text): (String, String) = working ? ("ellipsis.circle", activity ?? "Working…") : {
             switch state {
@@ -1060,6 +1147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.activity = working ? (activity ?? "Working…") : nil
         model.ip = info.ip
         model.duration = info.duration
+        model.since = connectedSince
         model.dropped = dropped
         model.autoReconnect = autoReconnect
     }
@@ -1074,7 +1162,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         wantConnected = false
         cancelReconnect()
         activity = "Disconnecting…"
-        run({ (true, nil, runVPN(["disconnect"])) })
+        let ip = vpnIP
+        run {
+            // Done as soon as the tunnel's interface is gone; Cisco's CLI may still be tidying up.
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: vpnCLI)
+            p.arguments = ["disconnect"]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            p.standardInput = FileHandle.nullDevice
+            try? p.run()
+            let deadline = Date().addingTimeInterval(20)
+            while Date() < deadline && p.isRunning {
+                if let ip, !tunnelAddresses().contains(ip) { break }
+                usleep(150_000)
+            }
+            let down = ip.map { !tunnelAddresses().contains($0) } ?? false
+            return (true, nil, "", down ? .disconnected : nil, nil)
+        }
     }
 
     func cancelReconnect() {
@@ -1116,25 +1221,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let totp = Keychain.get("totp").flatMap(TOTP.secretBytes)
         let (host, group, user) = (Prefs.host, Prefs.group, Prefs.username)
         // The Cisco GUI blocks CLI connects ("Another AnyConnect application is running").
-        for id in ciscoGUIBundleIDs {
-            NSRunningApplication.runningApplications(withBundleIdentifier: id).forEach { $0.terminate() }
-        }
+        let guis = ciscoGUIBundleIDs.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
+        guis.forEach { $0.terminate() }
         activity = auto ? "Reconnecting…" : "Connecting…"
         run {
-            usleep(800_000)  // let the GUI quit first, or it rewrites the preference on exit
+            if !guis.isEmpty { usleep(800_000) }  // let the GUI quit first, or it rewrites the preference on exit
             Prefs.setCiscoDefaultGroup(group)
+            let before = tunnelAddresses()
             let r = connect(host: host, group: group, user: user, password: password, pin: pin, totpSecret: totp)
-            return (r.ok, r.message, r.log)
+            guard r.ok else { return (false, r.message, r.log, nil, nil) }
+            // The new tunnel address, straight from the interfaces; `vpn stats` only as a fallback.
+            let ip = tunnelAddresses().subtracting(before).first ?? connectionInfo().ip
+            return (true, nil, r.log, .connected, ip)
         } done: { ok, message in
             logEvent(ok ? "connected" : "connect failed: \(message ?? "cancelled")")
             if ok {
                 self.wantConnected = true
                 self.cancelReconnect()
-                self.queue.async {
-                    let ip = connectionInfo().ip
-                    Notify.post(auto ? "VPN reconnected" : "VPN connected",
-                                [Prefs.host, ip].compactMap { $0 }.joined(separator: " · "))
-                }
+                Notify.post(auto ? "VPN reconnected" : "VPN connected",
+                            [Prefs.host, self.vpnIP].compactMap { $0 }.joined(separator: " · "))
             } else if !auto || message == nil || message!.hasPrefix("Login rejected") {
                 // A manual failure, a cancel or a wrong password: retrying would not help.
                 self.wantConnected = false
@@ -1145,19 +1250,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    func run(_ job: @escaping () -> (ok: Bool, message: String?, log: String),
+    /// `state` is what the job saw (nil = ask Cisco); `ip` is a new tunnel address after a connect.
+    func run(_ job: @escaping () -> (ok: Bool, message: String?, log: String, state: VPNState?, ip: String?),
              done: ((Bool, String?) -> Void)? = nil) {
         working = true
         render()
+        cancelStatusCheck()   // do not wait ~4 s behind a background `vpn state`/`stats`
         queue.async {
-            let (ok, message, log) = job()
-            let s = currentState()
+            let (ok, message, log, seen, ip) = job()
+            let s = seen ?? currentState()
             DispatchQueue.main.async {
                 self.working = false
                 self.state = s
+                if s == .connected {
+                    if let ip { self.vpnIP = ip; self.connectedSince = Date() }
+                } else {
+                    self.vpnIP = nil
+                    self.connectedSince = nil
+                }
+                self.lastTunnels = tunnelAddresses()
                 done?(ok, message)
                 self.render()
-                self.refresh()
+                if s == .connected && self.vpnIP == nil { self.refresh(force: true) }
                 // Auto-reconnect failures stay quiet until it gives up.
                 if !ok, let message, self.reconnectTimer == nil { self.showError(message, details: log) }
             }

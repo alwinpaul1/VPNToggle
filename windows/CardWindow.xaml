@@ -10,7 +10,7 @@
                             CornerRadius="0" UseAeroCaptionButtons="False"/>
     </shell:WindowChrome.WindowChrome>
 
-    <Border BorderBrush="{DynamicResource SurfaceStroke}" BorderThickness="0">
+    <Border BorderBrush="{Binding OutlineBrush}" BorderThickness="1" CornerRadius="8">
         <StackPanel x:Name="Root" Margin="18,16,18,18">
             <StackPanel.RenderTransform>
                 <TranslateTransform x:Name="Slide"/>
@@ -33,61 +33,70 @@
                 </Button>
             </Grid>
 
-            <!-- Status orb: click it to toggle, like a quick-settings tile -->
-            <Grid Margin="0,22,0,0" HorizontalAlignment="Center">
-                <Ellipse Width="92" Height="92" Fill="{Binding Tint}" Opacity="0.45"
+            <!-- Power switch: neutral in every state; the state shows in the symbol colour, a slim ring,
+                 the coloured status word and the card's hairline outline (NordVPN-style restraint). -->
+            <Grid Margin="0,22,0,0" HorizontalAlignment="Center" Width="104" Height="104">
+                <!-- soft halo while connected -->
+                <Ellipse Width="90" Height="90" Fill="{Binding Tint}" Opacity="0.28"
                          Visibility="{Binding Glow, Converter={StaticResource BoolToVis}}">
                     <Ellipse.Effect>
-                        <BlurEffect Radius="30"/>
+                        <BlurEffect Radius="22"/>
                     </Ellipse.Effect>
                 </Ellipse>
-                <Button Click="Toggle_Click" Cursor="Hand" IsEnabled="{Binding NotBusy}">
+                <!-- slim ring when connected or dropped -->
+                <Ellipse Width="98" Height="98" StrokeThickness="2" Stroke="{Binding Tint}"
+                         Visibility="{Binding Lit, Converter={StaticResource BoolToVis}}"/>
+                <!-- spinning arc while working -->
+                <Path Width="98" Height="98" Stroke="#3F86FF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                      Data="M49,1 A48,48 0 0 1 97,49" RenderTransformOrigin="0.5,0.5"
+                      Visibility="{Binding Busy, Converter={StaticResource BoolToVis}}">
+                    <Path.RenderTransform>
+                        <RotateTransform x:Name="Spin"/>
+                    </Path.RenderTransform>
+                    <Path.Triggers>
+                        <EventTrigger RoutedEvent="Loaded">
+                            <BeginStoryboard>
+                                <Storyboard RepeatBehavior="Forever">
+                                    <DoubleAnimation Storyboard.TargetName="Spin" Storyboard.TargetProperty="Angle"
+                                                     From="0" To="360" Duration="0:0:0.9"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </EventTrigger>
+                    </Path.Triggers>
+                </Path>
+                <Button Click="Toggle_Click" Cursor="Hand" IsEnabled="{Binding NotBusy}" IsDefault="True"
+                        AutomationProperties.Name="{Binding ButtonText}">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
-                            <Grid>
-                                <Ellipse x:Name="Orb" Width="88" Height="88" Fill="{Binding Tint}"/>
-                                <Ellipse Width="88" Height="88" StrokeThickness="1" Stroke="#40FFFFFF">
-                                    <Ellipse.Fill>
-                                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                                            <GradientStop Color="#30FFFFFF" Offset="0"/>
-                                            <GradientStop Color="#00FFFFFF" Offset="0.6"/>
-                                        </LinearGradientBrush>
-                                    </Ellipse.Fill>
-                                </Ellipse>
+                            <Grid x:Name="Body" RenderTransformOrigin="0.5,0.5">
+                                <Grid.RenderTransform>
+                                    <ScaleTransform x:Name="Press"/>
+                                </Grid.RenderTransform>
+                                <Ellipse x:Name="Orb" Width="84" Height="84" Fill="{DynamicResource OrbFill}"
+                                         Stroke="{DynamicResource SurfaceStroke}" StrokeThickness="1"/>
                                 <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Grid>
                             <ControlTemplate.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Orb" Property="Opacity" Value="0.9"/></Trigger>
-                                <Trigger Property="IsPressed" Value="True"><Setter TargetName="Orb" Property="Opacity" Value="0.75"/></Trigger>
+                                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Orb" Property="Fill" Value="{DynamicResource OrbFillHover}"/></Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Body" Property="RenderTransform">
+                                        <Setter.Value><ScaleTransform ScaleX="0.94" ScaleY="0.94"/></Setter.Value>
+                                    </Setter>
+                                </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
                     </Button.Template>
-                    <Grid>
-                        <TextBlock Text="{Binding Glyph}" FontFamily="{StaticResource Icons}" FontSize="32" Foreground="White"
-                                   Visibility="{Binding NotBusy, Converter={StaticResource BoolToVis}}"/>
-                        <!-- spinner while connecting -->
-                        <Path Stroke="White" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                              Width="32" Height="32" Data="M16,2 A14,14 0 1 1 2,16" RenderTransformOrigin="0.5,0.5"
-                              Visibility="{Binding Busy, Converter={StaticResource BoolToVis}}">
-                            <Path.RenderTransform>
-                                <RotateTransform x:Name="Spin"/>
-                            </Path.RenderTransform>
-                            <Path.Triggers>
-                                <EventTrigger RoutedEvent="Loaded">
-                                    <BeginStoryboard>
-                                        <Storyboard RepeatBehavior="Forever">
-                                            <DoubleAnimation Storyboard.TargetName="Spin" Storyboard.TargetProperty="Angle"
-                                                             From="0" To="360" Duration="0:0:0.9"/>
-                                        </Storyboard>
-                                    </BeginStoryboard>
-                                </EventTrigger>
-                            </Path.Triggers>
-                        </Path>
-                    </Grid>
+                    <TextBlock Text="&#xE7E8;" FontFamily="{StaticResource Icons}" FontSize="30" Foreground="{Binding GlyphBrush}"/>
                 </Button>
             </Grid>
 
-            <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+            <TextBlock Text="{Binding Title}" Foreground="{Binding TitleBrush}" FontSize="18" FontWeight="SemiBold"
+                       HorizontalAlignment="Center" Margin="0,14,0,0"/>
+            <!-- live session timer while connected -->
+            <TextBlock Text="{Binding Clock}" FontSize="12" FontWeight="Medium" HorizontalAlignment="Center" Margin="0,3,0,0"
+                       FontFamily="Segoe UI Variable Text, Segoe UI" Typography.NumeralAlignment="Tabular"
+                       Foreground="{DynamicResource TextSecondary}"
+                       Visibility="{Binding Connected, Converter={StaticResource BoolToVis}}"/>
 
             <!-- Details -->
             <Border Margin="0,18,0,0" CornerRadius="8" Background="{DynamicResource CardFill}"
@@ -119,11 +128,6 @@
                         <TextBlock Style="{StaticResource RowLabel}" Text="IP address"/>
                         <TextBlock Style="{StaticResource RowValue}" Text="{Binding Ip}"/>
                     </DockPanel>
-                    <DockPanel Height="34" Visibility="{Binding Connected, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Style="{StaticResource RowIcon}" Text="&#xE823;"/>
-                        <TextBlock Style="{StaticResource RowLabel}" Text="Connected for"/>
-                        <TextBlock Style="{StaticResource RowValue}" Text="{Binding Duration}"/>
-                    </DockPanel>
                     <DockPanel Height="34">
                         <TextBlock Style="{StaticResource RowIcon}" Text="&#xE8D7;"/>
                         <TextBlock Style="{StaticResource RowLabel}" Text="Two-factor"/>
@@ -138,8 +142,6 @@
                 </StackPanel>
             </Border>
 
-            <Button Margin="0,16,0,0" Style="{StaticResource PrimaryButton}" Background="{Binding ButtonBrush}"
-                    Content="{Binding ButtonText}" Click="Toggle_Click" IsEnabled="{Binding NotBusy}" IsDefault="True"/>
         </StackPanel>
     </Border>
 </Window>
