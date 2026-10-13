@@ -43,6 +43,11 @@ dotnet publish -c Release -o publish
 ```
 
 This produces a single self-contained `publish/VPNToggle.exe`; copy it anywhere and run it.
+Or skip building and download `VPNToggle.exe` from the repo's Releases page.
+
+If restore fails with `NU1100 Unable to resolve ...`, NuGet cannot reach nuget.org: check
+`dotnet nuget list source`, and any proxy or firewall (the repo's `windows/NuGet.config`
+already names nuget.org).
 Needs Windows 10 2004 or later and Cisco Secure Client (or AnyConnect). Left-click the
 tray shield for the status card, hover for a quick status, right-click for a quick menu.
 On first start it asks for the credentials. From a script: `start vpntoggle://connect`
