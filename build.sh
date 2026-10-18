@@ -2,6 +2,10 @@
 # Builds VPNToggle.app and installs it to ~/Applications.
 set -e
 cd "$(dirname "$0")"
+# Version from the newest release tag (v1.4 -> 1.4); build number = commit count.
+VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')
+VERSION=${VERSION:-0.0}
+BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 APP=build/VPNToggle.app
 rm -rf build && mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
 # App icon from icon/icon.svg (needs rsvg-convert: brew install librsvg)
@@ -20,8 +24,8 @@ cat > $APP/Contents/Info.plist <<PLIST
   <key>CFBundleName</key><string>VPNToggle</string>
   <key>CFBundleExecutable</key><string>VPNToggle</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
@@ -38,4 +42,4 @@ codesign --force --sign "${IDENTITY:--}" $APP
 mkdir -p ~/Applications
 rm -rf ~/Applications/VPNToggle.app
 cp -R $APP ~/Applications/
-echo "Installed ~/Applications/VPNToggle.app"
+echo "Installed ~/Applications/VPNToggle.app ($VERSION, build $BUILD)"

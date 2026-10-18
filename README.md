@@ -185,4 +185,6 @@ Dependencies are downloaded automatically: ZXing.Net (QR codes) and the Windows 
 ./build.sh      # builds and installs ~/Applications/VPNToggle.app
 ```
 
+The app's version comes from the newest `v*` git tag, so tag a release before building its zip.
+
 No other dependencies: it uses only Apple's frameworks (AppKit, SwiftUI, AVFoundation, Vision).
