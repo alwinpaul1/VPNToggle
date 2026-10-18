@@ -1,6 +1,7 @@
 #!/bin/sh
 # Keeps Cisco's Network Visibility agent (acnvmagent) small.
-# Run by launchd as root every 5 minutes. It restarts the agent when
+# Run by launchd as root every 5 minutes. It keeps the agent at background
+# priority, and restarts it when
 #   - its memory passes CAP_MB, or
 #   - this is the first run of a new day (the midnight restart).
 # vpnagentd starts the agent again on its own; this script only checks that it did.
@@ -20,6 +21,10 @@ log() {
 
 pid=$(pgrep -x acnvmagent | head -1)
 [ -z "$pid" ] && exit 0
+
+# Background priority: on Apple silicon the agent then runs on the efficiency cores
+# and its disk I/O is throttled, so it cannot slow down what you are using.
+taskpolicy -b -p "$pid" 2>/dev/null
 
 rss_mb=$(( $(ps -o rss= -p "$pid" | tr -d ' ') / 1024 ))
 today=$(date +%F)
@@ -43,6 +48,7 @@ kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
 sleep 30
 new=$(pgrep -x acnvmagent | head -1)
 if [ -n "$new" ]; then
+  taskpolicy -b -p "$new" 2>/dev/null
   log "restarted: $reason; new pid $new"
 else
   log "restarted: $reason; NOT running again after 30 s (vpnagentd did not respawn it)"

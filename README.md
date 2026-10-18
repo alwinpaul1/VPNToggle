@@ -143,7 +143,9 @@ heavy traffic and growing past 1.3 GB of memory. It is separate from the VPN, so
 restarting it does not drop the tunnel; Cisco's `vpnagentd` starts it again within seconds.
 
 `nvm-watchdog/` keeps it small. It checks every 5 minutes and restarts the agent when it
-passes 400 MB, plus once a day at the first check after midnight. It logs to
+passes 400 MB, plus once a day at the first check after midnight. It also gives the agent
+background priority, so on Apple silicon it runs on the efficiency cores and stops slowing
+down your apps. It logs to
 `/var/log/nvm-watchdog.log` and starts that log over past 64 KB.
 
 ```sh
