@@ -135,6 +135,25 @@ For scripts and shortcuts: `vpntoggle://connect`, `vpntoggle://disconnect`,
 Log files: Windows `%LOCALAPPDATA%\VPNToggle\VPNToggle.log`, macOS `~/Library/Logs/VPNToggle.log`.
 Error pop-ups have a **Copy details** button with Cisco's full output.
 
+### Mac slow? Cisco's `acnvmagent` growing (macOS, optional)
+
+Cisco Secure Client can install a Network Visibility Module whose agent, `acnvmagent`, looks
+at every network connection. On a Mac that ran for weeks it was seen using 70% CPU under
+heavy traffic and growing past 1.3 GB of memory. It is separate from the VPN, so
+restarting it does not drop the tunnel; Cisco's `vpnagentd` starts it again within seconds.
+
+`nvm-watchdog/` keeps it small. It checks every 5 minutes and restarts the agent when it
+passes 400 MB, plus once a day at the first check after midnight. It logs to
+`/var/log/nvm-watchdog.log` and starts that log over past 64 KB.
+
+```sh
+sudo sh nvm-watchdog/install.sh     # install (runs the first check at once)
+sudo sh nvm-watchdog/uninstall.sh   # remove
+```
+
+Change the limit with `CAP_MB` at the top of `nvm-watchdog/nvm-watchdog.sh` before installing.
+If Activity Monitor shows no `acnvmagent`, your Cisco install has no NVM and you do not need this.
+
 ### Uninstall
 
 - **Windows:** quit it (⋯ → Quit), turn off Launch at startup first if you enabled it, then
