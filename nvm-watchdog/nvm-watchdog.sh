@@ -1,7 +1,9 @@
 #!/bin/sh
 # Keeps Cisco's Network Visibility agent (acnvmagent) small.
-# Run by launchd as root every 5 minutes. It keeps the agent at background
-# priority, and restarts it when
+# Run by launchd as root every 30 seconds, so an agent that Cisco starts again
+# (after a reconnect, a crash or a manual kill) is back at background priority
+# within 30 s instead of running at full priority for up to 5 minutes. It keeps the
+# agent at background priority, and restarts it when
 #   - its memory passes CAP_MB, or
 #   - this is the first run of a new day (the midnight restart).
 # vpnagentd starts the agent again on its own; this script only checks that it did.
