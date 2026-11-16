@@ -9,15 +9,35 @@ work=$(mktemp -d)
 pids=""
 app=""
 
+bounded() {
+  limit=$1
+  shift
+  "$@" &
+  job=$!
+  waited=0
+  while kill -0 "$job" 2>/dev/null; do
+    if [ "$waited" -ge $((limit * 5)) ]; then
+      echo "timed out after $limit s: $*"
+      kill -KILL "$job" 2>/dev/null || sudo kill -KILL "$job" 2>/dev/null
+      wait "$job" 2>/dev/null
+      return 124
+    fi
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  wait "$job"
+}
+
 cleanup() {
-  sudo sh nvm-pause/uninstall.sh > /dev/null 2>&1
+  bounded 60 sudo sh nvm-pause/uninstall.sh > /dev/null 2>&1
   for p in $pids $app; do kill -KILL "$p" 2>/dev/null; done
   rm -rf "$work"
 }
 fail() {
   echo "FAIL integration: $*"
-  ps -axo pid,stat,comm | grep -E "acnvmagent|vpnagentd" | grep -v grep
+  ps -axo pid,stat,etime,comm | grep -E "acnvmagent|vpnagentd|VPNToggle|vpn-toggle-watch|launchctl" | grep -v grep
   sudo cat /var/log/vpn-toggle.log 2>/dev/null
+  [ -f "$HOME/Library/Logs/VPNToggle.log" ] && cat "$HOME/Library/Logs/VPNToggle.log"
   cleanup
   exit 1
 }
@@ -49,7 +69,7 @@ sleep 1
 listed=$(sh nvm-pause/vpn-toggle-watch.sh --list)
 [ "$listed" = "$agent running stop" ] || fail "dry run selected: $listed"
 
-sudo sh nvm-pause/install.sh || fail "install script failed"
+bounded 60 sudo sh nvm-pause/install.sh || fail "install script failed"
 sudo launchctl print system/local.vpn-toggle > /dev/null || fail "daemon not loaded"
 [ -f /Library/LaunchDaemons/local.vpn-toggle.plist ] && [ -x /usr/local/sbin/vpn-toggle-watch.sh ] || fail "files not installed"
 wait_state "$agent" stopped 25 || fail "agent not stopped within 5 s"
@@ -59,7 +79,7 @@ sleep 2
 [ "$(state "$decoy2")" != "T" ] && [ -n "$(state "$decoy2")" ] || fail "decoy acnvmagent2 was stopped"
 echo "ok: agent stopped, decoys untouched"
 
-sudo sh nvm-pause/install.sh || fail "second install over the running daemon failed"
+bounded 60 sudo sh nvm-pause/install.sh || fail "second install over the running daemon failed"
 sudo launchctl print system/local.vpn-toggle > /dev/null || fail "daemon not loaded after the second install"
 sleep 2
 [ "$(state "$agent")" = "T" ] || fail "agent not stopped after the second install"
@@ -71,7 +91,7 @@ wait_state "$agent" stopped 15 || fail "respawned agent not stopped within 3 s"
 [ "$(state "$decoy1")" != "T" ] || fail "decoy stopped after respawn"
 echo "ok: respawned agent stopped"
 
-sudo sh nvm-pause/uninstall.sh || fail "uninstall script failed"
+bounded 60 sudo sh nvm-pause/uninstall.sh || fail "uninstall script failed"
 sudo launchctl print system/local.vpn-toggle > /dev/null 2>&1 && fail "daemon still loaded when uninstall returned"
 wait_state "$agent" running 15 || fail "agent not resumed after uninstall"
 [ ! -e /Library/LaunchDaemons/local.vpn-toggle.plist ] && [ ! -e /usr/local/sbin/vpn-toggle-watch.sh ] || fail "files left behind"
@@ -79,7 +99,7 @@ sleep 2
 [ "$(state "$agent")" != "T" ] || fail "agent stopped again after uninstall"
 echo "ok: uninstall resumed the agent and removed the daemon"
 
-./build.sh --no-install || fail "build failed"
+bounded 600 ./build.sh --no-install || fail "build failed"
 bundle=build/VPNToggle.app
 [ -x "$bundle/Contents/MacOS/VPNToggle" ] || fail "no app binary"
 codesign --verify "$bundle" || fail "app signature invalid"

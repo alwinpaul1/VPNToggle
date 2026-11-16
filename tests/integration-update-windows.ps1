@@ -26,6 +26,8 @@ function Fail([string]$message) {
             Where-Object { $_.ProviderName -in ".NET Runtime", "Application Error", "Windows Error Reporting" } |
             Select-Object -First 6 | ForEach-Object { Write-Host "--- $($_.ProviderName) $($_.TimeCreated)"; Write-Host $_.Message }
     } catch { Write-Host "no event log entries: $_" }
+    Get-Process | Where-Object { $_.ProcessName -match "VPNToggle|acnvmagent|csc_vpnagent|powershell|pwsh|python|Dummy" } |
+        ForEach-Object { Write-Host "process $($_.Id) $($_.ProcessName) session $($_.SessionId)" }
     Cleanup
     exit 1
 }
@@ -45,9 +47,18 @@ function Release([string]$tag, [string]$url, [string]$digest, [long]$size) {
     [System.IO.File]::WriteAllText((Join-Path $served "latest.json"), $json)
 }
 
-function Attempt {
-    $p = Start-Process $inst -ArgumentList "--self-update-test" -Wait -PassThru
+function RunBounded([string]$file, [string]$argument, [int]$seconds) {
+    $p = Start-Process $file -ArgumentList $argument -PassThru
+    $null = $p.Handle
+    if (-not $p.WaitForExit($seconds * 1000)) {
+        try { $p.Kill() } catch { }
+        Fail "$argument did not finish within $seconds s"
+    }
     return $p.ExitCode
+}
+
+function Attempt {
+    return RunBounded $inst "--self-update-test" 180
 }
 
 function Refused([string]$name, [string]$kind) {
@@ -62,8 +73,10 @@ function Refused([string]$name, [string]$kind) {
 
 New-Item -ItemType Directory -Path $served, $appFolder | Out-Null
 Remove-Item -Recurse -Force windows/obj -ErrorAction SilentlyContinue
+$publishStarted = Get-Date
 dotnet publish windows/VPNToggle.csproj -c Release -o (Join-Path $work "new") -p:VPNToggleVersion=99.0 --nologo -v quiet
 if ($LASTEXITCODE -ne 0) { Fail "publishing the new version failed" }
+Write-Host "published the new version in $([int]((Get-Date) - $publishStarted).TotalSeconds) s"
 Copy-Item (Join-Path $work "new\VPNToggle.exe") (Join-Path $served "VPNToggle.exe")
 Copy-Item $oldBuild (Join-Path $served "old.exe")
 Copy-Item $oldBuild $inst
@@ -86,7 +99,7 @@ $origin = "http://127.0.0.1:$port"
 $env:VPNTOGGLE_UPDATE_TEST_API = "$origin/latest.json"
 $up = $false
 for ($i = 0; $i -lt 50 -and -not $up; $i++) {
-    try { Invoke-WebRequest "$origin/old.exe" -Method Head -UseBasicParsing | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
+    try { Invoke-WebRequest "$origin/old.exe" -Method Head -UseBasicParsing -TimeoutSec 5 | Out-Null; $up = $true } catch { Start-Sleep -Milliseconds 200 }
 }
 if (-not $up) { Fail "the local server did not start" }
 if (Test-Path $appLog) { Remove-Item $appLog }

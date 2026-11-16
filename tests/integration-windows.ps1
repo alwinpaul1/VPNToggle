@@ -10,19 +10,40 @@ $installed = Join-Path $env:ProgramFiles "VPNToggle\VPNToggle.exe"
 $pauseLog = Join-Path $env:ProgramData "VPNToggle\nvm-pause.log"
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("vpntoggle-it-" + [guid]::NewGuid().ToString("N"))
 $started = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
+$began = Get-Date
 
 function Fail([string]$message) {
     Write-Host "FAIL integration: $message"
     if (Test-Path $pauseLog) { Get-Content $pauseLog | Write-Host }
-    Get-Process | Where-Object { $_.ProcessName -match "acnvmagent|csc_vpnagent|VPNToggle" } |
-        ForEach-Object { Write-Host "$($_.Id) $($_.ProcessName) session $($_.SessionId)" }
+    $appLogPath = Join-Path $env:LOCALAPPDATA "VPNToggle\VPNToggle.log"
+    if (Test-Path $appLogPath) { Get-Content $appLogPath | Write-Host }
+    try {
+        Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = $began } -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -in ".NET Runtime", "Application Error", "Windows Error Reporting" } |
+            Select-Object -First 6 | ForEach-Object { Write-Host "--- $($_.ProviderName) $($_.TimeCreated)"; Write-Host $_.Message }
+    } catch { Write-Host "no event log entries: $_" }
+    Get-Process | Where-Object { $_.ProcessName -match "VPNToggle|acnvmagent|csc_vpnagent|powershell|pwsh|python|Dummy" } |
+        ForEach-Object { Write-Host "process $($_.Id) $($_.ProcessName) session $($_.SessionId)" }
     Cleanup
     exit 1
 }
 
 function Cleanup {
-    try { Start-Process $exe -ArgumentList "--nvm-uninstall" -Wait | Out-Null } catch { }
+    try {
+        $u = Start-Process $exe -ArgumentList "--nvm-uninstall" -PassThru
+        if (-not $u.WaitForExit(60000)) { $u.Kill() }
+    } catch { }
     foreach ($p in $started) { try { if (-not $p.HasExited) { $p.Kill() } } catch { } }
+}
+
+function RunBounded([string]$file, [string]$argument, [int]$seconds) {
+    $p = Start-Process $file -ArgumentList $argument -PassThru
+    $null = $p.Handle
+    if (-not $p.WaitForExit($seconds * 1000)) {
+        try { $p.Kill() } catch { }
+        Fail "$argument did not finish within $seconds s"
+    }
+    return $p.ExitCode
 }
 
 function Suspended([int]$id) {
@@ -72,8 +93,8 @@ if ($agent.HasExited -or $decoy1.HasExited -or $decoy2.HasExited) { Fail "a dumm
 if ((Get-Process -Id $agent.Id).ProcessName -ne "acnvmagent") { Fail "the dummy is not named acnvmagent" }
 if (Suspended $agent.Id) { Fail "the dummy counts as suspended before the install" }
 
-$install = Start-Process $exe -ArgumentList "--nvm-install" -Wait -PassThru
-if ($install.ExitCode -ne 0) { Fail "install exited with $($install.ExitCode)" }
+$installCode = RunBounded $exe "--nvm-install" 90
+if ($installCode -ne 0) { Fail "install exited with $installCode" }
 if (-not (TaskPresent)) { Fail "the scheduled task is missing" }
 if (-not (Test-Path $installed)) { Fail "the pauser was not copied to Program Files" }
 $xml = [xml](schtasks.exe /Query /TN $taskName /XML | Out-String)
@@ -94,13 +115,13 @@ if (-not (WaitSuspended $agent.Id $true 4)) { Fail "respawned agent not suspende
 if (Suspended $decoy1.Id) { Fail "decoy suspended after the respawn" }
 Write-Host "ok: respawned agent suspended"
 
-$again = Start-Process $exe -ArgumentList "--nvm-install" -Wait -PassThru
-if ($again.ExitCode -ne 0) { Fail "second install exited with $($again.ExitCode)" }
+$againCode = RunBounded $exe "--nvm-install" 90
+if ($againCode -ne 0) { Fail "second install exited with $againCode" }
 if (-not (WaitSuspended $agent.Id $true 10)) { Fail "agent not suspended after a second install" }
 Write-Host "ok: installing twice works"
 
-$uninstall = Start-Process $exe -ArgumentList "--nvm-uninstall" -Wait -PassThru
-if ($uninstall.ExitCode -ne 0) { Fail "uninstall exited with $($uninstall.ExitCode)" }
+$uninstallCode = RunBounded $exe "--nvm-uninstall" 90
+if ($uninstallCode -ne 0) { Fail "uninstall exited with $uninstallCode" }
 if (-not (WaitSuspended $agent.Id $false 3)) { Fail "agent not resumed after uninstall" }
 if (TaskPresent) { Fail "the scheduled task is still there" }
 if (Test-Path $installed) { Fail "the pauser file is still in Program Files" }

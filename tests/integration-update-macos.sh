@@ -15,6 +15,25 @@ server=""
 log="$HOME/Library/Logs/VPNToggle.log"
 mkdir -p "$served" "$work/Applications"
 
+bounded() {
+  limit=$1
+  shift
+  "$@" &
+  job=$!
+  waited=0
+  while kill -0 "$job" 2>/dev/null; do
+    if [ "$waited" -ge $((limit * 5)) ]; then
+      echo "timed out after $limit s: $*"
+      kill -KILL "$job" 2>/dev/null || sudo kill -KILL "$job" 2>/dev/null
+      wait "$job" 2>/dev/null
+      return 124
+    fi
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  wait "$job"
+}
+
 cleanup() {
   [ -n "$server" ] && kill "$server" 2>/dev/null
   pkill -f "$inst/Contents/MacOS/VPNToggle" 2>/dev/null
@@ -25,6 +44,8 @@ cleanup() {
 fail() {
   echo "FAIL update: $*"
   [ -f "$log" ] && cat "$log"
+  [ -f "$work/out.txt" ] && cat "$work/out.txt"
+  ps -axo pid,stat,etime,comm | grep -E "VPNToggle|http.server|codesign|security" | grep -v grep
   cleanup
   exit 1
 }
@@ -40,7 +61,7 @@ release() {
 JSON
 }
 attempt() {
-  VPNTOGGLE_UPDATE_TEST_API="$api" "$inst/Contents/MacOS/VPNToggle" --self-update-test > "$work/out.txt" 2>&1
+  bounded 120 env VPNTOGGLE_UPDATE_TEST_API="$api" "$inst/Contents/MacOS/VPNToggle" --self-update-test > "$work/out.txt" 2>&1
   code=$?
   cat "$work/out.txt"
 }
@@ -68,25 +89,25 @@ extendedKeyUsage = critical,codeSigning
 CNF
 /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work/key.pem" -out "$work/cert.pem" -days 3 -config "$work/cert.cnf" 2>/dev/null || fail "could not make a certificate"
 /usr/bin/openssl pkcs12 -export -inkey "$work/key.pem" -in "$work/cert.pem" -out "$work/id.p12" -passout "pass:$kcpass" -name "VPNToggle Local Signing" || fail "could not pack the identity"
-security create-keychain -p "$kcpass" "$kc" || fail "could not create a keychain"
+bounded 30 security create-keychain -p "$kcpass" "$kc" || fail "could not create a keychain"
 security set-keychain-settings "$kc"
 security unlock-keychain -p "$kcpass" "$kc"
-security import "$work/id.p12" -k "$kc" -P "$kcpass" -T /usr/bin/codesign > /dev/null || fail "could not import the identity"
-security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpass" "$kc" > /dev/null 2>&1
+bounded 30 security import "$work/id.p12" -k "$kc" -P "$kcpass" -T /usr/bin/codesign > /dev/null || fail "could not import the identity"
+bounded 30 security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpass" "$kc" > /dev/null 2>&1
 security list-keychains -d user -s "$kc" $before
 security find-identity -p codesigning | grep -q "VPNToggle Local Signing" || fail "the signing identity is not visible"
 
-VPNTOGGLE_VERSION=99.0 ./build.sh --no-install || fail "building the new version failed"
+bounded 600 env VPNTOGGLE_VERSION=99.0 ./build.sh --no-install || fail "building the new version failed"
 codesign -dvv build/VPNToggle.app 2>&1 | grep -q "Authority=VPNToggle Local Signing" || fail "the new version is not signed with the test certificate"
 ditto -c -k --keepParent build/VPNToggle.app "$served/VPNToggle-macOS.zip"
 ditto build/VPNToggle.app "$work/adhoc/VPNToggle.app"
-codesign --force --sign - "$work/adhoc/VPNToggle.app" 2>/dev/null || fail "could not sign the ad hoc copy"
+bounded 60 codesign --force --sign - "$work/adhoc/VPNToggle.app" 2>/dev/null || fail "could not sign the ad hoc copy"
 ditto -c -k --keepParent "$work/adhoc/VPNToggle.app" "$served/adhoc.zip"
 ditto build/VPNToggle.app "$work/tampered/VPNToggle.app"
 echo "changed" >> "$work/tampered/VPNToggle.app/Contents/Resources/nvm-pause/install.sh"
 ditto -c -k --keepParent "$work/tampered/VPNToggle.app" "$served/tampered.zip"
 
-VPNTOGGLE_VERSION=1.0 ./build.sh --no-install || fail "building the old version failed"
+bounded 600 env VPNTOGGLE_VERSION=1.0 ./build.sh --no-install || fail "building the old version failed"
 ditto build/VPNToggle.app "$inst"
 [ "$(version "$inst")" = "1.0" ] || fail "the old version is not 1.0"
 codesign --verify "$inst" || fail "the old version is not validly signed"
@@ -97,7 +118,7 @@ server=$!
 origin="http://127.0.0.1:$port"
 api="$origin/latest.json"
 i=0
-until curl -s -o /dev/null "$origin/VPNToggle-macOS.zip"; do
+until curl -s --max-time 5 -o /dev/null "$origin/VPNToggle-macOS.zip"; do
   i=$((i + 1))
   [ $i -lt 50 ] || fail "the local server did not start"
   sleep 0.2
