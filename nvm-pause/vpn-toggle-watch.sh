@@ -60,5 +60,6 @@ while :; do
       kill -STOP "$p" 2>/dev/null && log "suspended $AGENT $p"
     fi
   done
-  sleep 1
+  sleep 1 &
+  wait $!
 done

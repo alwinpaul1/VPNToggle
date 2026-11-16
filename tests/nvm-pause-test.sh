@@ -46,6 +46,68 @@ plutil -lint "$root/Library/LaunchDaemons/local.vpn-toggle.plist" > /dev/null ||
 [ "$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$root/Library/LaunchDaemons/local.vpn-toggle.plist")" = "true" ] || fail "plist is not kept alive"
 VPNTOGGLE_ROOT="$root" VPNTOGGLE_SKIP_LAUNCHCTL=1 sh nvm-pause/uninstall.sh > /dev/null
 [ -z "$(find "$root" -type f)" ] || fail "files left after uninstall"
+mkdir "$work/ctl"
+cat > "$work/ctl/pgrep" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+cat > "$work/ctl/launchctl" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$CTL_LOG"
+case "$1" in
+  print)
+    [ "$2" = "system/local.vpn-toggle" ] || exit 113
+    left=$(cat "$CTL_LEFT")
+    [ "$left" -gt 0 ] || exit 113
+    grep -q "^bootout" "$CTL_LOG" && echo $((left - 1)) > "$CTL_LEFT"
+    exit 0
+    ;;
+  bootstrap) echo 1000000 > "$CTL_LEFT" ;;
+esac
+exit 0
+STUB
+chmod +x "$work/ctl/pgrep" "$work/ctl/launchctl"
+export CTL_LOG="$work/ctl.log" CTL_LEFT="$work/ctl.left"
+ctl() { PATH="$work/ctl:$PATH" VPNTOGGLE_ROOT="$root" VPNTOGGLE_UNLOAD_TRIES=10 sh "nvm-pause/$1" 2>&1; }
+
+: > "$CTL_LOG"; echo 0 > "$CTL_LEFT"
+ctl install.sh > /dev/null || fail "install with launchctl failed"
+grep -q "^bootout" "$CTL_LOG" && fail "install booted out a daemon that was not loaded"
+grep -q "^bootstrap system $root/Library/LaunchDaemons/local.vpn-toggle.plist" "$CTL_LOG" || fail "install did not bootstrap"
+
+: > "$CTL_LOG"; echo 4 > "$CTL_LEFT"
+ctl install.sh > /dev/null || fail "reinstall over a loaded daemon failed"
+[ "$(grep -n -E "^(bootout|bootstrap)" "$CTL_LOG" | cut -d: -f2 | cut -d" " -f1 | tr '\n' ' ')" = "bootout bootstrap " ] || fail "reinstall order wrong"
+[ "$(sed -n "/^bootout/,/^bootstrap/p" "$CTL_LOG" | grep -c "^print")" -ge 4 ] || fail "reinstall did not wait for the old daemon to go"
+
+: > "$CTL_LOG"; echo 4 > "$CTL_LEFT"
+out=$(ctl uninstall.sh) || fail "uninstall of a slowly stopping daemon failed: $out"
+[ "$out" = "removed" ] || fail "uninstall said: $out"
+[ "$(sed -n "/^bootout/,\$p" "$CTL_LOG" | grep -c "^print")" -ge 4 ] || fail "uninstall did not wait for the daemon to go"
+[ -z "$(find "$root" -type f)" ] || fail "files left after uninstall with launchctl"
+
+: > "$CTL_LOG"; echo 0 > "$CTL_LEFT"
+ctl install.sh > /dev/null
+: > "$CTL_LOG"; echo 1000000 > "$CTL_LEFT"
+if out=$(ctl uninstall.sh); then fail "uninstall reported success with the daemon still loaded"; fi
+echo "$out" | grep -q "still loaded" || fail "stuck uninstall said: $out"
+echo "$out" | grep -qx "removed" && fail "stuck uninstall printed removed"
+[ -f "$root/Library/LaunchDaemons/local.vpn-toggle.plist" ] || fail "stuck uninstall removed the plist"
+if out=$(ctl install.sh); then fail "install reported success over a daemon that would not unload"; fi
+echo 0 > "$CTL_LEFT"
+ctl uninstall.sh > /dev/null
+
+PATH="$work/ctl:$PATH" sh nvm-pause/vpn-toggle-watch.sh 2>/dev/null &
+watcher=$!
+sleep 1.3
+kill -TERM "$watcher"
+i=0
+while kill -0 "$watcher" 2>/dev/null && [ $i -lt 5 ]; do sleep 0.1; i=$((i + 1)); done
+if kill -0 "$watcher" 2>/dev/null; then
+  kill -KILL "$watcher"
+  fail "watcher did not stop within 0.5 s of TERM"
+fi
+
 if [ "$(id -u)" != 0 ]; then
   sh nvm-pause/install.sh > /dev/null 2>&1 && fail "install ran without root"
   sh nvm-pause/uninstall.sh > /dev/null 2>&1 && fail "uninstall ran without root"

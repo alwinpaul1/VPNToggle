@@ -59,6 +59,12 @@ sleep 2
 [ "$(state "$decoy2")" != "T" ] && [ -n "$(state "$decoy2")" ] || fail "decoy acnvmagent2 was stopped"
 echo "ok: agent stopped, decoys untouched"
 
+sudo sh nvm-pause/install.sh || fail "second install over the running daemon failed"
+sudo launchctl print system/local.vpn-toggle > /dev/null || fail "daemon not loaded after the second install"
+sleep 2
+[ "$(state "$agent")" = "T" ] || fail "agent not stopped after the second install"
+echo "ok: installing twice works"
+
 kill -KILL "$agent"
 spawn d acnvmagent; agent=$last
 wait_state "$agent" stopped 15 || fail "respawned agent not stopped within 3 s"
@@ -66,8 +72,8 @@ wait_state "$agent" stopped 15 || fail "respawned agent not stopped within 3 s"
 echo "ok: respawned agent stopped"
 
 sudo sh nvm-pause/uninstall.sh || fail "uninstall script failed"
+sudo launchctl print system/local.vpn-toggle > /dev/null 2>&1 && fail "daemon still loaded when uninstall returned"
 wait_state "$agent" running 15 || fail "agent not resumed after uninstall"
-sudo launchctl print system/local.vpn-toggle > /dev/null 2>&1 && fail "daemon still loaded"
 [ ! -e /Library/LaunchDaemons/local.vpn-toggle.plist ] && [ ! -e /usr/local/sbin/vpn-toggle-watch.sh ] || fail "files left behind"
 sleep 2
 [ "$(state "$agent")" != "T" ] || fail "agent stopped again after uninstall"
