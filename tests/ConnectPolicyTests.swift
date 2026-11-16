@@ -73,6 +73,7 @@ struct ConnectPolicyTests {
               "Could not connect to vpn-gate.b-tu.de.")
 
         updateChecks()
+        StatusPolicyTests.run()
 
         print("\(passed) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)

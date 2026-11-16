@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./tests/run.sh
-      - run: swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift -o VPNToggle -framework Cocoa -framework ServiceManagement
+      - run: swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift -o VPNToggle -framework Cocoa -framework ServiceManagement
 
   windows:
     runs-on: windows-latest

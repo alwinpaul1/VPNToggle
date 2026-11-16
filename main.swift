@@ -5,6 +5,7 @@ import CryptoKit
 import Security
 import ServiceManagement
 import SwiftUI
+import SystemConfiguration
 import UniformTypeIdentifiers
 import UserNotifications
 import Vision
@@ -181,15 +182,15 @@ enum TOTP {
 
 // MARK: - Cisco CLI
 
-enum VPNState { case connected, disconnected, busy, unknown }
-
 /// Runs `vpn <args>` and returns its combined output.
 /// The status check (`vpn state`/`stats`) in flight, so a click can cancel it instead of queueing behind it.
 let statusLock = NSLock()
 var statusProcess: Process?
+var cancelledProcess: Process?
 
 func cancelStatusCheck() {
     statusLock.lock()
+    cancelledProcess = statusProcess
     statusProcess?.terminate()
     statusLock.unlock()
 }
@@ -206,25 +207,19 @@ func runVPN(_ args: [String]) -> String {
     statusLock.lock(); statusProcess = p; statusLock.unlock()
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
-    statusLock.lock(); if statusProcess === p { statusProcess = nil }; statusLock.unlock()
-    return String(decoding: data, as: UTF8.self)
+    statusLock.lock()
+    if statusProcess === p { statusProcess = nil }
+    let cancelled = cancelledProcess === p
+    if cancelled { cancelledProcess = nil }
+    statusLock.unlock()
+    return cancelled ? "" : String(decoding: data, as: UTF8.self)
 }
 
-/// Client IP and seconds connected from `vpn stats`, e.g. ("141.43.0.10", 3900). Slow (~1.3 s).
-func connectionInfo() -> (ip: String?, seconds: Int?) {
-    var ip: String?, seconds: Int?
-    for line in runVPN(["stats"]).components(separatedBy: "\n") {
-        let parts = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 2, parts[1] != "Not Available" else { continue }
-        if parts[0] == "Client Address (IPv4)" { ip = parts[1] }
-        if parts[0] == "Duration" {
-            // "00:12:05" or "1 day(s) 02:03:04"
-            let hms = parts[1].split(separator: " ").last?.split(separator: ":").compactMap { Int($0) } ?? []
-            let days = parts[1].contains("day") ? Int(parts[1].split(separator: " ").first ?? "") ?? 0 : 0
-            if hms.count == 3 { seconds = ((days * 24 + hms[0]) * 60 + hms[1]) * 60 + hms[2] }
-        }
-    }
-    return (ip, seconds)
+func readStatus() -> (state: VPNState, ip: String?, seconds: Int?) {
+    let output = runVPN(["stats"])
+    guard !output.isEmpty else { return (.unknown, nil, nil) }
+    let r = StatusPolicy.reading(fromStats: output)
+    return (r.state ?? currentState(), r.ip, r.seconds)
 }
 
 /// "12m", "1h 05m", "1d 2h 03m".
@@ -257,11 +252,7 @@ func tunnelAddresses() -> Set<String> {
 }
 
 func currentState() -> VPNState {
-    let out = runVPN(["state"])
-    guard let line = out.components(separatedBy: "\n").last(where: { $0.contains("state:") }) else { return .unknown }
-    if line.contains("Disconnected") { return .disconnected }
-    if line.contains("Connected") { return .connected }
-    return .busy
+    StatusPolicy.state(fromBanner: runVPN(["state"])) ?? .unknown
 }
 
 /// Asks for a 2FA code on the main thread; called from the background connect job.
@@ -286,7 +277,8 @@ func askForCode() -> String? {
 /// Connects with `vpn -s` on a pseudo-terminal, answering each prompt as it appears, so a prompt the
 /// server skips never swallows the wrong answer. Secrets are scrubbed from the returned log.
 /// `message` is a one-line reason on failure, nil when the user cancelled.
-func connect(host: String, group: String, user: String, password: String, pin: String?, totpSecret: Data?) -> (ok: Bool, message: String?, log: String) {
+func connect(host: String, group: String, user: String, password: String, pin: String?, totpSecret: Data?,
+             progress: (String) -> Void = { _ in }) -> (ok: Bool, message: String?, log: String) {
     var master: Int32 = 0, slave: Int32 = 0
     guard openpty(&master, &slave, nil, nil, nil) == 0 else { return (false, "Could not open a terminal for the Cisco CLI.", "") }
     var t = termios()
@@ -329,6 +321,7 @@ func connect(host: String, group: String, user: String, password: String, pin: S
         pending += chunk
         for line in chunk.components(separatedBy: "\n") where line.contains(">> ") {
             ciscoSteps.append(String(format: "%.1fs ", Date().timeIntervalSince(started)) + (line.components(separatedBy: ">> ").last ?? line))
+            if let step = StatusPolicy.connectStep(forLine: line) { progress(step) }
         }
 
         let tail = (pending.components(separatedBy: "\n").last ?? "").trimmingCharacters(in: .whitespaces)
@@ -359,6 +352,7 @@ func connect(host: String, group: String, user: String, password: String, pin: S
             if asked[kind]! > 2 { failure = "Login rejected. Check your password and 2FA code."; break }
             pending = ""
             send(reply)
+            if kind != "yn" { progress("Signing in") }
             timing.append("\(kind) \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
         }
         if log.contains("state: Connected") {
@@ -385,7 +379,7 @@ func connect(host: String, group: String, user: String, password: String, pin: S
     if cancelled { return (false, nil, log) }
     if let failure { return (false, failure, log) }
     // Cisco's own "state: Connected" line is enough; skip the 2.5 s `vpn state` round trip.
-    if log.contains("state: Connected") || currentState() == .connected { return (true, nil, log) }
+    if log.contains("state: Connected") || readStatus().state == .connected { return (true, nil, log) }
     // Prefer the CLI's own error line, e.g. ">> error: The requested authentication type is not supported".
     return (false, ConnectPolicy.failureMessage(log: log, host: host, timedOut: timedOut), log)
 }
@@ -468,7 +462,8 @@ final class FloatingPanel: NSPanel {
         let top = icon.minY - 6
         let target = NSRect(x: x, y: top - size.height, width: size.width, height: size.height)
         if isVisible { setFrame(target, display: true); return }
-        setFrame(target.offsetBy(dx: 0, dy: 6), display: false)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        setFrame(reduceMotion ? target : target.offsetBy(dx: 0, dy: 6), display: false)
         contentView?.subviews.first?.frame = contentView?.bounds ?? .zero
         alphaValue = 0
         if makeKey { makeKeyAndOrderFront(nil) } else { orderFrontRegardless() }
@@ -491,6 +486,19 @@ final class FloatingPanel: NSPanel {
             animator().alphaValue = 0
         }, completionHandler: { self.orderOut(nil) })
     }
+
+    func refit(under icon: NSRect) {
+        guard isVisible else { return }
+        let size = host.fittingSize
+        guard abs(size.height - frame.height) > 0.5 || abs(size.width - frame.width) > 0.5 else { return }
+        let x = frame.midX - size.width / 2
+        let target = NSRect(x: x, y: frame.maxY - size.height, width: size.width, height: size.height)
+        NSAnimationContext.runAnimationGroup { c in
+            c.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
+            c.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animator().setFrame(target, display: true)
+        }
+    }
 }
 
 /// Shows the small status card while the pointer rests on the icon. The menu bar does not deliver
@@ -502,26 +510,46 @@ final class HoverController {
     var inside = false
     var suppressed = false   // after a click, stay hidden until the pointer leaves
     var pending: DispatchWorkItem?
+    var willShow: () -> Void = {}
+    var timer: Timer?
 
     init(panel: FloatingPanel, iconFrame: @escaping () -> NSRect?) {
         self.panel = panel
         self.iconFrame = iconFrame
-        Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in self?.poll() }
+        schedule(StatusPolicy.hoverFarPoll)
+    }
+
+    func schedule(_ interval: TimeInterval) {
+        guard timer?.timeInterval != interval else { return }
+        timer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.poll() }
+        t.tolerance = interval / 4
+        timer = t
+    }
+
+    func distance(from p: NSPoint, to f: NSRect) -> Double {
+        let dx = max(f.minX - p.x, 0, p.x - f.maxX)
+        let dy = max(f.minY - p.y, 0, p.y - f.maxY)
+        return Double(max(dx, dy))
     }
 
     func poll() {
         guard let f = iconFrame(), f.height > 0 else { return }
-        let now = f.contains(NSEvent.mouseLocation)
+        let pointer = NSEvent.mouseLocation
+        let wasNear = timer?.timeInterval == StatusPolicy.hoverNearPoll
+        schedule(StatusPolicy.hoverInterval(pointerDistance: distance(from: pointer, to: f)))
+        let now = f.contains(pointer)
         guard now != inside else { return }
         inside = now
         if now {
             pending?.cancel()
             let w = DispatchWorkItem { [weak self] in
                 guard let self, self.inside, !self.suppressed, !self.blocked(), let f = self.iconFrame() else { return }
+                self.willShow()
                 self.panel.show(under: f, makeKey: false)
             }
             pending = w
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: w)
+            DispatchQueue.main.asyncAfter(deadline: .now() + (wasNear ? 0.35 : 0.15), execute: w)
         } else {
             suppressed = false
             hide()
@@ -727,6 +755,9 @@ final class VPNModel: ObservableObject {
     @Published var launchAtLogin = false
     @Published var autoTwoFactor = false
     @Published var updateVersion: String?
+    @Published var step: String?
+    @Published var reconnectNote: String?
+    @Published var cardVisible = false
     var host: String { Prefs.host }
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
 
@@ -739,11 +770,15 @@ final class VPNModel: ObservableObject {
     var onOpenUpdate: () -> Void = {}
     var onDismissUpdate: () -> Void = {}
 
+    func set<T: Equatable>(_ path: ReferenceWritableKeyPath<VPNModel, T>, _ value: T) {
+        if self[keyPath: path] != value { self[keyPath: path] = value }
+    }
+
     var connected: Bool { state == .connected && activity == nil }
     var tint: Color {
-        if activity != nil { return Color(red: 0.20, green: 0.48, blue: 1.0) }
-        if connected { return Color(red: 0.13, green: 0.74, blue: 0.42) }
-        return dropped ? Color(red: 1.0, green: 0.58, blue: 0.10) : Color(nsColor: .systemGray)
+        if activity != nil { return Color(nsColor: .systemBlue) }
+        if connected { return Color(nsColor: .systemGreen) }
+        return dropped ? Color(nsColor: .systemOrange) : Color(nsColor: .systemGray)
     }
     var symbol: String {
         if connected { return "lock.shield.fill" }
@@ -759,10 +794,14 @@ final class VPNModel: ObservableObject {
         }
     }
     var subtitle: String {
-        if activity != nil { return "Signing in to \(host)" }
+        if let a = activity { return step ?? (a.hasPrefix("Disconnecting") ? "Closing the tunnel" : "Signing in to \(host)") }
         if connected { return "Your traffic goes through BTU" }
-        if dropped { return autoReconnect ? "Reconnecting automatically…" : "Reconnect when you are ready" }
-        return "Your traffic goes out directly"
+        if dropped { return reconnectNote ?? "Reconnect when you are ready" }
+        switch state {
+        case .busy: return "Cisco is changing the connection"
+        case .unknown: return "Asking Cisco Secure Client"
+        default: return "Your traffic goes out directly"
+        }
     }
 }
 
@@ -786,7 +825,7 @@ struct CardView: View {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .strokeBorder(m.tint.opacity(m.connected || m.dropped ? 0.55 : 0), lineWidth: 1)
         )
-        .animation(.smooth(duration: 0.4), value: m.connected)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.4), value: m.connected)
     }
 
     var header: some View {
@@ -860,7 +899,7 @@ struct CardView: View {
     /// symbol's colour, a slim ring around it, the coloured status word and the card's hairline outline.
     var hero: some View {
         let busy = m.activity != nil
-        let ring = busy ? Color(red: 0.25, green: 0.52, blue: 1.0) : m.tint
+        let spinning = busy && !reduceMotion
         return VStack(spacing: 0) {
             ZStack {
                 // soft halo, only while connected
@@ -870,12 +909,13 @@ struct CardView: View {
                     .blur(radius: 18)
                 // slim ring: full when connected or dropped, a spinning arc while working
                 Circle()
-                    .trim(from: 0, to: busy ? 0.25 : 1)
-                    .stroke(ring.opacity(busy || m.connected || m.dropped ? 1 : 0),
+                    .trim(from: 0, to: spinning ? 0.25 : 1)
+                    .stroke(m.tint.opacity(spinning || m.connected || m.dropped ? 1 : busy ? 0.5 : 0),
                             style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .frame(width: 98, height: 98)
-                    .rotationEffect(.degrees(busy && spin ? 270 : -90))
-                    .animation(busy ? .linear(duration: 0.9).repeatForever(autoreverses: false) : .smooth(duration: 0.4), value: spin)
+                    .rotationEffect(.degrees(spinning && spin ? 270 : -90))
+                    .animation(spinning ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                               : reduceMotion ? nil : .smooth(duration: 0.4), value: spin)
 
                 Button(action: m.onToggle) {
                     Image(systemName: "power")
@@ -889,6 +929,7 @@ struct CardView: View {
                 .disabled(busy)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityLabel(m.connected ? "Turn the VPN off" : "Turn the VPN on")
+                .accessibilityValue(m.title)
             }
             .frame(height: 104)
             .padding(.top, 20)
@@ -898,19 +939,32 @@ struct CardView: View {
             Text(m.title)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(m.connected ? AnyShapeStyle(m.tint) : m.dropped ? AnyShapeStyle(m.tint) : AnyShapeStyle(.primary))
+                .contentTransition(.opacity)
                 .padding(.top, 14)
-            // live session timer while connected
-            if m.connected, let since = m.since {
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    Text(sessionClock(ctx.date.timeIntervalSince(since)))
-                        .font(.system(size: 12, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
+            statusLine
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(height: 16)
                 .padding(.top, 3)
-            }
         }
         .frame(maxWidth: .infinity)
-        .animation(.smooth(duration: 0.3), value: m.title)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: m.title)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: m.subtitle)
+    }
+
+    @ViewBuilder var statusLine: some View {
+        if m.connected, let since = m.since {
+            if m.cardVisible {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    Text(sessionClock(ctx.date.timeIntervalSince(since)))
+                }
+            } else {
+                Text(sessionClock(Date().timeIntervalSince(since)))
+            }
+        } else {
+            Text(m.subtitle).contentTransition(.opacity)
+        }
     }
 
     func sessionClock(_ t: TimeInterval) -> String {
@@ -1016,6 +1070,25 @@ enum LoginItem {
 
 // MARK: - App
 
+final class InterfaceWatcher {
+    private var store: SCDynamicStore?
+    private let onChange: () -> Void
+
+    init?(onChange: @escaping () -> Void) {
+        self.onChange = onChange
+        var context = SCDynamicStoreContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                            retain: nil, release: nil, copyDescription: nil)
+        let callback: SCDynamicStoreCallBack = { _, _, info in
+            guard let info else { return }
+            Unmanaged<InterfaceWatcher>.fromOpaque(info).takeUnretainedValue().onChange()
+        }
+        guard let store = SCDynamicStoreCreate(nil, "VPNToggle" as CFString, callback, &context),
+              SCDynamicStoreSetNotificationKeys(store, nil, ["State:/Network/Interface/[^/]+/IPv4"] as CFArray),
+              SCDynamicStoreSetDispatchQueue(store, .main) else { return nil }
+        self.store = store
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let qrPicker = QRPicker()
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -1037,6 +1110,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var connectedSince: Date?
     var lastTunnels = Set<String>()
     var nextSlowCheck = Date.distantPast
+    var watcher: InterfaceWatcher?
+    var pollTimer: Timer?
+    var checking = false
+    var recheck = false
+    var settleCheck: DispatchWorkItem?
+    var lastIcon = ""
+    var step: String?
+    let reconnectDelays: [TimeInterval] = [5, 30, 120, 300]
     /// True from a successful connect until the user disconnects; a drop in between triggers a reconnect.
     var wantConnected = false
     var reconnectAttempts = 0
@@ -1092,10 +1173,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.onOpenUpdate = { [weak self] in self?.openUpdatePage() }
         model.onDismissUpdate = { [weak self] in self?.dismissUpdate() }
 
-        hover.blocked = { [weak self] in self?.card.isVisible ?? false }
+        hover.blocked = { [weak self] in self?.model.cardVisible ?? false }
+        hover.willShow = { [weak self] in self?.render() }
+        watcher = InterfaceWatcher { [weak self] in self?.refresh() }
         render()
         refresh()
-        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
         // Cisco drops the tunnel on sleep; check soon after wake so a reconnect starts quickly.
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) {
             [weak self] _ in DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self?.refresh(force: true) }
@@ -1103,6 +1185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         logEvent("app started")
         Notify.setUp(delegate: self)
         if Keychain.get("password") == nil { editCredentials() }
+        model.autoTwoFactor = Keychain.get("totp") != nil
         renderUpdate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.checkForUpdates(manual: false) }
         Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
@@ -1193,18 +1276,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func openCard() {
         guard let f = iconFrame else { return }
         model.launchAtLogin = LoginItem.enabled
-        model.autoReconnect = autoReconnect
-        model.autoTwoFactor = Keychain.get("totp") != nil
+        model.cardVisible = true
+        render()
         refresh(force: vpnIP == nil)
         hover.hide()
         card.show(under: f, makeKey: true)
         // Close on a click anywhere else, like a menu.
+        guard clickMonitor == nil else { return }
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closeCard()
         }
     }
 
     func closeCard() {
+        guard model.cardVisible else { return }
+        model.cardVisible = false
         card.dismiss()
         if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
     }
@@ -1227,8 +1313,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         logEvent("auto-reconnect \(autoReconnect ? "on" : "off")")
     }
 
-    /// Cheap check every 3 s: is the tunnel's address still up? Cisco's slow CLI runs only when the
-    /// answer is unclear (tunnel gone, interfaces changed, nothing known yet) or every 15 s while off.
+    /// Cheap check: is the tunnel's address still up? It runs when an interface address changes and on a
+    /// slow timer. Cisco's slow CLI runs only when the answer is unclear (tunnel gone, interfaces changed,
+    /// nothing known yet) or at the interval StatusPolicy gives for the current state.
     func refresh(force: Bool = false) {
         guard !working else { return }
         let tunnels = tunnelAddresses()
@@ -1238,14 +1325,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             apply(.connected, learned: nil)
             return
         }
-        guard force || changed || vpnIP != nil || Date() >= nextSlowCheck else { return }
-        nextSlowCheck = Date().addingTimeInterval(15)
+        guard StatusPolicy.needsCLI(force: force, tunnelsChanged: changed, lostTunnel: vpnIP != nil,
+                                    now: Date(), nextCheck: nextSlowCheck) else { return }
+        if changed && state != .unknown { settleLater() }
+        guard !checking else { recheck = true; return }
+        checking = true
+        nextSlowCheck = Date().addingTimeInterval(StatusPolicy.cliInterval(state: state, watchingInterfaces: watcher != nil))
         queue.async {
-            if self.working { return }   // a connect/disconnect started meanwhile; it reports the state itself
-            let s = currentState()
-            let learned = s == .connected && !self.working ? connectionInfo() : nil
-            DispatchQueue.main.async { if !self.working { self.apply(s, learned: learned) } }
+            let r = self.working ? nil : readStatus()
+            DispatchQueue.main.async {
+                self.checking = false
+                if let r, !self.working {
+                    self.nextSlowCheck = Date().addingTimeInterval(
+                        StatusPolicy.cliInterval(state: r.state, watchingInterfaces: self.watcher != nil))
+                    self.apply(r.state, learned: r.state == .connected ? (r.ip, r.seconds) : nil)
+                }
+                if self.recheck { self.recheck = false; self.refresh(force: true) }
+            }
         }
+    }
+
+    func settleLater() {
+        settleCheck?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.refresh(force: true) }
+        settleCheck = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: w)
+    }
+
+    func schedulePoll() {
+        let settled = StatusPolicy.settled(state: state, tunnelIP: vpnIP, tunnels: lastTunnels)
+        let interval = StatusPolicy.pollInterval(settled: settled, watchingInterfaces: watcher != nil)
+        guard pollTimer?.timeInterval != interval else { return }
+        pollTimer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.refresh() }
+        t.tolerance = interval / 5
+        pollTimer = t
     }
 
     func apply(_ s: VPNState, learned: (ip: String?, seconds: Int?)?) {
@@ -1268,7 +1382,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func render() {
-        let info = (ip: vpnIP, duration: connectedSince.map { formatDuration(Int(Date().timeIntervalSince($0))) })
         let dropped = wantConnected && state != .connected
         let (symbol, text): (String, String) = working ? ("ellipsis.circle", activity ?? "Working…") : {
             switch state {
@@ -1278,17 +1391,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             case .unknown: return ("questionmark.circle", "VPN: Unknown")
             }
         }()
-        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: text)
-        img?.isTemplate = true  // follows the light/dark menu bar automatically
-        item.button?.image = img
+        if symbol + text != lastIcon {
+            lastIcon = symbol + text
+            let img = NSImage(systemSymbolName: symbol, accessibilityDescription: text)
+            img?.isTemplate = true  // follows the light/dark menu bar automatically
+            item.button?.image = img
+        }
 
-        model.state = state
-        model.activity = working ? (activity ?? "Working…") : nil
-        model.ip = info.ip
-        model.duration = info.duration
-        model.since = connectedSince
-        model.dropped = dropped
-        model.autoReconnect = autoReconnect
+        model.set(\.state, state)
+        model.set(\.activity, working ? (activity ?? "Working…") : nil)
+        model.set(\.step, working ? step : nil)
+        model.set(\.ip, vpnIP)
+        model.set(\.duration, connectedSince.map { formatDuration(Int(Date().timeIntervalSince($0))) })
+        model.set(\.since, connectedSince)
+        model.set(\.dropped, dropped)
+        model.set(\.autoReconnect, autoReconnect)
+        model.set(\.reconnectNote, dropped ? StatusPolicy.reconnectNote(
+            attempt: reconnectAttempts, of: reconnectDelays.count, autoReconnect: autoReconnect) : nil)
+        schedulePoll()
+        if model.cardVisible {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.model.cardVisible, let f = self.iconFrame else { return }
+                self.card.refit(under: f)
+            }
+        }
     }
 
     func toggle() {
@@ -1329,7 +1455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     /// Backs off 5 s, 30 s, 2 min, 5 min, then gives up and says so.
     func scheduleReconnect() {
-        let delays: [TimeInterval] = [5, 30, 120, 300]
+        let delays = reconnectDelays
         guard reconnectAttempts < delays.count else {
             logEvent("auto-reconnect gave up after \(reconnectAttempts) attempts")
             wantConnected = false
@@ -1341,12 +1467,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let delay = delays[reconnectAttempts]
         reconnectAttempts += 1
         logEvent("dropped; reconnect attempt \(reconnectAttempts) in \(Int(delay)) s")
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] timer in
             guard let self else { return }
-            self.reconnectTimer = nil
-            guard self.wantConnected, !self.working else { return }
-            if currentState() == .connected { self.cancelReconnect(); self.refresh(); return }
-            self.connectNow(auto: true)
+            self.queue.async {
+                let r = self.working ? nil : readStatus()
+                DispatchQueue.main.async {
+                    guard self.reconnectTimer === timer else { return }
+                    self.reconnectTimer = nil
+                    guard self.wantConnected, !self.working else { return }
+                    if let r, r.state == .connected {
+                        self.cancelReconnect()
+                        self.apply(.connected, learned: (r.ip, r.seconds))
+                        return
+                    }
+                    self.connectNow(auto: true)
+                }
+            }
         }
         render()
     }
@@ -1367,10 +1503,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !guis.isEmpty { usleep(800_000) }  // let the GUI quit first, or it rewrites the preference on exit
             Prefs.setCiscoDefaultGroup(group)
             let before = tunnelAddresses()
-            let r = connect(host: host, group: group, user: user, password: password, pin: pin, totpSecret: totp)
+            let r = connect(host: host, group: group, user: user, password: password, pin: pin, totpSecret: totp) { step in
+                DispatchQueue.main.async {
+                    guard self.working, self.step != step else { return }
+                    self.step = step
+                    self.render()
+                }
+            }
             guard r.ok else { return (false, r.message, r.log, nil, nil) }
             // The new tunnel address, straight from the interfaces; `vpn stats` only as a fallback.
-            let ip = tunnelAddresses().subtracting(before).first ?? connectionInfo().ip
+            let ip = tunnelAddresses().subtracting(before).first ?? readStatus().ip
             return (true, nil, r.log, .connected, ip)
         } done: { ok, message in
             logEvent(ok ? "connected" : "connect failed: \(message ?? "cancelled")")
@@ -1393,13 +1535,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func run(_ job: @escaping () -> (ok: Bool, message: String?, log: String, state: VPNState?, ip: String?),
              done: ((Bool, String?) -> Void)? = nil) {
         working = true
+        step = nil
         render()
         cancelStatusCheck()   // do not wait ~4 s behind a background `vpn state`/`stats`
         queue.async {
             let (ok, message, log, seen, ip) = job()
-            let s = seen ?? currentState()
+            let s = seen ?? readStatus().state
             DispatchQueue.main.async {
                 self.working = false
+                self.step = nil
                 self.state = s
                 if s == .connected {
                     if let ip { self.vpnIP = ip; self.connectedSince = Date() }
@@ -1479,6 +1623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else {
             Keychain.set("totp", secret)
         }
+        model.autoTwoFactor = Keychain.get("totp") != nil
     }
 }
 
