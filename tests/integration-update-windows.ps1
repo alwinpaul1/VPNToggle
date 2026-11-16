@@ -30,6 +30,11 @@ function Fail([string]$message) {
     exit 1
 }
 
+function IsVersion([string]$text, [int]$major, [int]$minor) {
+    $v = [version]$text
+    return $v.Major -eq $major -and $v.Minor -eq $minor -and $v.Build -le 0
+}
+
 function Digest([string]$path) { return (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant() }
 
 function Release([string]$tag, [string]$url, [string]$digest, [long]$size) {
@@ -56,7 +61,8 @@ function Refused([string]$name, [string]$kind) {
 }
 
 New-Item -ItemType Directory -Path $served, $appFolder | Out-Null
-dotnet publish windows/VPNToggle.csproj -c Release -o (Join-Path $work "new") -p:Version=99.0 -p:AssemblyVersion=99.0.0.0 -p:FileVersion=99.0.0.0 --nologo -v quiet
+Remove-Item -Recurse -Force windows/obj -ErrorAction SilentlyContinue
+dotnet publish windows/VPNToggle.csproj -c Release -o (Join-Path $work "new") -p:VPNToggleVersion=99.0 --nologo -v quiet
 if ($LASTEXITCODE -ne 0) { Fail "publishing the new version failed" }
 Copy-Item (Join-Path $work "new\VPNToggle.exe") (Join-Path $served "VPNToggle.exe")
 Copy-Item $oldBuild (Join-Path $served "old.exe")
@@ -65,7 +71,10 @@ $oldVersion = (Get-Item $inst).VersionInfo.FileVersion
 $newVersion = (Get-Item (Join-Path $served "VPNToggle.exe")).VersionInfo.FileVersion
 Write-Host "old $oldVersion, new $newVersion"
 if (-not ([version]$newVersion -gt [version]$oldVersion)) { Fail "the new build is not newer than the old one" }
-if ([version]$newVersion -ne [version]"99.0.0.0") { Fail "the new build is not version 99.0" }
+if (-not (IsVersion $newVersion 99 0)) { Fail "the new build is not version 99.0" }
+$newAssembly = [System.Reflection.AssemblyName]::GetAssemblyName((Get-ChildItem windows/bin/Release -Recurse -Filter VPNToggle.dll | Sort-Object LastWriteTime | Select-Object -Last 1).FullName).Version
+Write-Host "new assembly version $newAssembly"
+if ("$newAssembly" -ne "99.0.0.0") { Fail "the new build's assembly version is $newAssembly, not 99.0.0.0" }
 $oldDigest = Digest $inst
 $good = Digest (Join-Path $served "VPNToggle.exe")
 $bytes = (Get-Item (Join-Path $served "VPNToggle.exe")).Length
@@ -99,7 +108,7 @@ Release "v99.0" "$origin/VPNToggle.exe" $good $bytes
 $code = Attempt
 if ($code -ne 0) { Fail "update: exit code $code" }
 if ((Digest $inst) -ne $good) { Fail "update: the program in place is not the new one" }
-if ([version](Get-Item $inst).VersionInfo.FileVersion -ne [version]"99.0.0.0") { Fail "update: wrong version in place" }
+if (-not (IsVersion (Get-Item $inst).VersionInfo.FileVersion 99 0)) { Fail "update: wrong version in place" }
 $running = $null
 for ($i = 0; $i -lt 75 -and $null -eq $running; $i++) {
     $running = Get-Process VPNToggle -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $inst } | Select-Object -First 1

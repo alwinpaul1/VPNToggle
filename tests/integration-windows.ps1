@@ -115,7 +115,13 @@ Start-Sleep -Seconds 12
 if ($app.HasExited) { Fail "the app exited within 12 s with code $($app.ExitCode)" }
 $appLog = Join-Path $env:LOCALAPPDATA "VPNToggle\VPNToggle.log"
 if (-not (Test-Path $appLog)) { Fail "the app wrote no log" }
-if (-not (Select-String -Path $appLog -Pattern "app started" -Quiet)) { Fail "the app did not log its start" }
+$tag = (git describe --tags --abbrev=0 --match "v*").TrimStart("v")
+$stamped = (Get-Item $exe).VersionInfo.FileVersion
+Write-Host "tag $tag, exe $stamped"
+if ([version]$stamped -ne [version]$tag) { Fail "the published exe is version $stamped, the tag says $tag" }
+$tagVersion = [version]$tag
+$shown = if ($tagVersion.Build -gt 0) { "$($tagVersion.Major).$($tagVersion.Minor).$($tagVersion.Build)" } else { "$($tagVersion.Major).$($tagVersion.Minor)" }
+if (-not (Select-String -Path $appLog -SimpleMatch "app started $shown" -Quiet)) { Fail "the app did not start as version $shown" }
 Get-Content $appLog | Write-Host
 Write-Host "ok: app published, started and stayed up"
 

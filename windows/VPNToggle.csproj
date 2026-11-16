@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" InitialTargets="VersionFromGitTag">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- 10.0.19041 brings the Windows camera APIs (Windows 10 2004 and later) -->
@@ -28,16 +28,25 @@
     <Resource Include="app.ico" />
     <Compile Remove="tests/**" />
   </ItemGroup>
-  <Target Name="VersionFromGitTag" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo">
+  <PropertyGroup Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(VPNToggleVersion)', '^[0-9]+(\.[0-9]+)?(\.[0-9]+)?$'))">
+    <StampVersion>$(VPNToggleVersion)</StampVersion>
+  </PropertyGroup>
+  <Target Name="VersionFromGitTag">
     <Exec Command="git describe --tags --abbrev=0 --match &quot;v*&quot;" WorkingDirectory="$(MSBuildProjectDirectory)"
           ConsoleToMSBuild="true" IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true" ContinueOnError="true"
-          StandardOutputImportance="low" StandardErrorImportance="low">
+          StandardOutputImportance="low" StandardErrorImportance="low" Condition="'$(StampVersion)' == ''">
       <Output TaskParameter="ConsoleOutput" PropertyName="GitTag" />
       <Output TaskParameter="ExitCode" PropertyName="GitTagExitCode" />
     </Exec>
-    <PropertyGroup Condition="'$(GitTagExitCode)' == '0' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(GitTag)', '^v[0-9]+(\.[0-9]+)?(\.[0-9]+)?$'))">
-      <Version>$(GitTag.Substring(1))</Version>
-      <AssemblyVersion>$(GitTag.Substring(1))</AssemblyVersion>
+    <PropertyGroup Condition="'$(StampVersion)' == '' and '$(GitTagExitCode)' == '0' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(GitTag)', '^v[0-9]+(\.[0-9]+)?(\.[0-9]+)?$'))">
+      <StampVersion>$(GitTag.Substring(1))</StampVersion>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(StampVersion)' != ''">
+      <Version>$(StampVersion)</Version>
+      <FileVersion>$(StampVersion)</FileVersion>
+      <AssemblyVersion Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(StampVersion)', '^[0-9]+$'))">$(StampVersion).0.0.0</AssemblyVersion>
+      <AssemblyVersion Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(StampVersion)', '^[0-9]+\.[0-9]+$'))">$(StampVersion).0.0</AssemblyVersion>
+      <AssemblyVersion Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(StampVersion)', '^[0-9]+\.[0-9]+\.[0-9]+$'))">$(StampVersion).0</AssemblyVersion>
     </PropertyGroup>
   </Target>
 </Project>

@@ -134,7 +134,7 @@ public sealed class AppController : IDisposable
         };
         updates.Start();
 
-        Log.Write("app started");
+        Log.Write($"app started {currentVersion}".TrimEnd());
         Render();
         RenderUpdate();
         Refresh();
