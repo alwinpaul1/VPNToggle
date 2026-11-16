@@ -136,6 +136,7 @@ for ($i = 0; $i -lt 120 -and -not $gone; $i++) {
 if (-not $gone) { Fail "update: the old program file was not cleaned up" }
 Start-Sleep -Seconds 8
 if ($running.HasExited) { Fail "update: the new version did not stay up" }
+if (-not (Select-String -Path $appLog -SimpleMatch "start arguments: --updated" -Quiet)) { Fail "update: the new version was not started with --updated" }
 if (-not (Select-String -Path $appLog -Pattern "update: now running 99.0" -Quiet)) { Fail "update: the new version did not log its version" }
 $copies = @(Get-Process VPNToggle -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $inst })
 if ($copies.Count -ne 1) { Fail "update: $($copies.Count) copies are running" }

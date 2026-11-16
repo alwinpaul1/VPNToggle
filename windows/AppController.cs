@@ -138,6 +138,10 @@ public sealed class AppController : IDisposable
         Render();
         RenderUpdate();
         Refresh();
+    }
+
+    public void FirstRunChecks()
+    {
         if (Cisco.Cli == null)
             Dialogs.Message("Cisco Secure Client not found", "Install Cisco Secure Client (or AnyConnect) first; VPNToggle drives its vpncli.exe.");
         else if (Secrets.Get("password") == null)

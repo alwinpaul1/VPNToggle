@@ -31,6 +31,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
         var command = CommandFrom(e.Args);
+        Log.Write($"start arguments: {(e.Args.Length == 0 ? "none" : string.Join(" ", e.Args))}");
         // Started by Windows at sign-in: stay quietly in the tray. Started by hand: show the card,
         // so it is obvious the app is running (its tray icon may sit in the hidden ^ overflow).
         var updated = command == "updated";
@@ -72,6 +73,8 @@ public partial class App : Application
         if (updated) controller.AfterUpdate();
         if (command != null) controller.Handle(command);
         else if (!quiet) controller.FirstShow();
+        var started = controller;
+        Dispatcher.BeginInvoke(new Action(started.FirstRunChecks));
     }
 
     void ListenForCommands()
