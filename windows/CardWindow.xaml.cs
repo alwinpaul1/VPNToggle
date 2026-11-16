@@ -52,8 +52,8 @@ public sealed class CardViewModel : INotifyPropertyChanged
     Brush outlineBrush = Brushes.Transparent;
     public Brush OutlineBrush { get => outlineBrush; set => Set(ref outlineBrush, value); }
 
-    string clock = "";
-    public string Clock { get => clock; set => Set(ref clock, value); }
+    string statusLine = "";
+    public string StatusLine { get => statusLine; set => Set(ref statusLine, value); }
 
     string? ip;
     public string? Ip { get => ip; set => Set(ref ip, value); }
@@ -88,9 +88,6 @@ public sealed class CardViewModel : INotifyPropertyChanged
     string updateDetail = "";
     public string UpdateDetail { get => updateDetail; set => Set(ref updateDetail, value); }
 
-    Brush buttonBrush = Brushes.SteelBlue;
-    public Brush ButtonBrush { get => buttonBrush; set => Set(ref buttonBrush, value); }
-
     void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
@@ -106,11 +103,16 @@ public partial class CardWindow : Window
     public Action<bool> SetLaunchAtLogin = _ => { };
     public Func<string?> CurrentIp = () => null;
     public DateTime HiddenAt { get; private set; }
+    readonly CardViewModel vm;
+    bool spinning;
 
     public CardWindow(CardViewModel vm)
     {
         InitializeComponent();
+        this.vm = vm;
         DataContext = vm;
+        vm.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(CardViewModel.Busy)) UpdateSpin(); };
+        IsVisibleChanged += (_, _) => UpdateSpin();
         SourceInitialized += (_, _) => Theme.StyleWindow(this, acrylic: true);
         Theme.Changed += () => { if (IsLoaded) Theme.StyleWindow(this, acrylic: true); };
         Deactivated += (_, _) => HideCard();
@@ -119,6 +121,16 @@ public partial class CardWindow : Window
             if (IsVisible && e.HeightChanged && e.PreviousSize.Height > 0 && SystemParameters.WorkArea.Top <= 0)
                 Top -= e.NewSize.Height - e.PreviousSize.Height;
         };
+    }
+
+    void UpdateSpin()
+    {
+        var run = IsVisible && vm.Busy && SystemParameters.ClientAreaAnimation;
+        if (run == spinning) return;
+        spinning = run;
+        Spin.BeginAnimation(RotateTransform.AngleProperty, run
+            ? new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(900)) { RepeatBehavior = RepeatBehavior.Forever }
+            : null);
     }
 
     void Toggle_Click(object sender, RoutedEventArgs e) => ToggleRequested?.Invoke();
@@ -170,6 +182,13 @@ public partial class CardWindow : Window
         var taskbarOnTop = SystemParameters.WorkArea.Top > 0;
 
         Activate();
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            Slide.BeginAnimation(TranslateTransform.YProperty, null);
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 1;
+            return;
+        }
         var slide = new DoubleAnimation(taskbarOnTop ? -12 : 12, 0, TimeSpan.FromMilliseconds(220))
         { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
         Slide.BeginAnimation(TranslateTransform.YProperty, slide);

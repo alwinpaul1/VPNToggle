@@ -14,8 +14,12 @@ namespace VPNToggle;
 public sealed class HoverWindow : Window
 {
     readonly DispatcherTimer watch = new() { Interval = TimeSpan.FromMilliseconds(120) };
+    readonly DispatcherTimer rest = new() { Interval = TimeSpan.FromMilliseconds(400) };
     System.Drawing.Point anchor;
+    System.Drawing.Point restAt;
+    Func<bool> blockedNow = () => false;
     DateTime lastMove;
+    public event Action? Showing;
 
     public HoverWindow(CardViewModel vm)
     {
@@ -58,28 +62,33 @@ public sealed class HoverWindow : Window
                 (Math.Abs(p.X - anchor.X) > 14 || Math.Abs(p.Y - anchor.Y) > 14))
                 HidePeek();
         };
+        rest.Tick += (_, _) =>
+        {
+            rest.Stop();
+            if (IsVisible || blockedNow()) return;
+            var p = System.Windows.Forms.Cursor.Position;
+            if (Near(p, restAt)) { ShowAt(restAt); return; }
+            if (Near(p, anchor)) { restAt = anchor; rest.Start(); }
+        };
     }
+
+    static bool Near(System.Drawing.Point a, System.Drawing.Point b) =>
+        Math.Abs(a.X - b.X) <= 14 && Math.Abs(a.Y - b.Y) <= 14;
 
     /// Called on every tray mouse-move; shows the peek after a short rest.
     public void PointerOverIcon(Func<bool> blocked)
     {
         anchor = System.Windows.Forms.Cursor.Position;
         lastMove = DateTime.Now;
-        if (IsVisible || blocked()) return;
-        var at = anchor;
-        var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
-        t.Tick += (_, _) =>
-        {
-            t.Stop();
-            var p = System.Windows.Forms.Cursor.Position;
-            if (Math.Abs(p.X - at.X) > 14 || Math.Abs(p.Y - at.Y) > 14 || blocked()) return;
-            ShowAt(at);
-        };
-        t.Start();
+        if (IsVisible || rest.IsEnabled || blocked()) return;
+        blockedNow = blocked;
+        restAt = anchor;
+        rest.Start();
     }
 
     void ShowAt(System.Drawing.Point pixel)
     {
+        Showing?.Invoke();
         Opacity = 0;
         Show();
         UpdateLayout();
@@ -92,6 +101,7 @@ public sealed class HoverWindow : Window
 
     public void HidePeek()
     {
+        rest.Stop();
         watch.Stop();
         if (IsVisible) Hide();
     }

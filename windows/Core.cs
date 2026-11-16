@@ -15,8 +15,6 @@ using System.Threading.Tasks;
 
 namespace VPNToggle;
 
-public enum VpnState { Unknown, Connected, Disconnected, Busy }
-
 /// Non-secret settings, kept in %APPDATA%\VPNToggle\settings.json.
 public sealed class Settings
 {
@@ -289,10 +287,15 @@ public static class Cisco
     // The status check (`vpncli state`/`stats`) in flight, so a click can cancel it instead of queueing behind it.
     static readonly object statusLock = new();
     static Process? statusProcess;
+    static Process? cancelledProcess;
 
     public static void CancelStatusCheck()
     {
-        lock (statusLock) { try { statusProcess?.Kill(); } catch { } }
+        lock (statusLock)
+        {
+            cancelledProcess = statusProcess;
+            try { statusProcess?.Kill(); } catch { }
+        }
     }
 
     /// IPv4 addresses on all network interfaces that are up. Instant, where `vpncli state` starts Cisco's
@@ -340,43 +343,27 @@ public static class Cisco
             p.StandardInput.Close();
             var output = p.StandardOutput.ReadToEndAsync();
             if (!p.WaitForExit(20_000)) { try { p.Kill(); } catch { } }
-            return output.Wait(2_000) ? output.Result : "";
+            var text = output.Wait(2_000) ? output.Result : "";
+            lock (statusLock) return cancelledProcess == p ? "" : text;
         }
-        finally { lock (statusLock) if (statusProcess == p) statusProcess = null; }
-    }
-
-    public static VpnState State()
-    {
-        var line = Run("state").Split('\n').LastOrDefault(l => l.Contains("state:"));
-        if (line == null) return VpnState.Unknown;
-        if (line.Contains("Disconnected")) return VpnState.Disconnected;
-        if (line.Contains("Connected")) return VpnState.Connected;
-        return VpnState.Busy;
-    }
-
-    /// Client IP and seconds connected from `vpncli stats`, e.g. ("141.43.0.10", 3900). Slow.
-    public static (string? ip, int? seconds) Info()
-    {
-        string? ip = null;
-        int? seconds = null;
-        foreach (var raw in Run("stats").Split('\n'))
+        finally
         {
-            var parts = raw.Split(':', 2);
-            if (parts.Length != 2) continue;
-            var (key, value) = (parts[0].Trim(), parts[1].Trim());
-            if (value == "Not Available") continue;
-            if (key == "Client Address (IPv4)") ip = value;
-            if (key == "Duration")
+            lock (statusLock)
             {
-                // "00:12:05" or "1 day(s) 02:03:04"
-                var m = Regex.Match(value, @"(?:(\d+)\s*day.*?\s)?(\d+):(\d+):(\d+)");
-                if (!m.Success) continue;
-                var days = m.Groups[1].Success ? int.Parse(m.Groups[1].Value) : 0;
-                int h = int.Parse(m.Groups[2].Value), min = int.Parse(m.Groups[3].Value), sec = int.Parse(m.Groups[4].Value);
-                seconds = ((days * 24 + h) * 60 + min) * 60 + sec;
+                if (statusProcess == p) statusProcess = null;
+                if (cancelledProcess == p) cancelledProcess = null;
             }
         }
-        return (ip, seconds);
+    }
+
+    public static VpnState State() => StatusPolicy.StateFromBanner(Run("state")) ?? VpnState.Unknown;
+
+    public static (VpnState state, string? ip, int? seconds) Status()
+    {
+        var output = Run("stats");
+        if (output.Length == 0) return (VpnState.Unknown, null, null);
+        var r = StatusPolicy.ReadingFromStats(output);
+        return (r.State ?? State(), r.Ip, r.Seconds);
     }
 
     /// Returns true when a Cisco window was running (and has been closed).
@@ -456,7 +443,8 @@ public static class Cisco
     /// buffer them when output is redirected), it falls back to sending the answers in BTU's known order:
     /// group, username, password, 2FA code. `message` is a one-line reason on failure, null on cancel.
     public static (bool ok, string? message, string log) Connect(
-        string host, string group, string user, string password, string? pin, byte[]? totp, Func<string?> askCode)
+        string host, string group, string user, string password, string? pin, byte[]? totp, Func<string?> askCode,
+        Action<string>? progress = null)
     {
         if (Cli == null) return (false, "Cisco Secure Client is not installed (vpncli.exe not found).", "");
         var psi = new ProcessStartInfo(Cli, "-s")
@@ -503,6 +491,7 @@ public static class Cisco
                 {
                     blindSent = true;
                     Send(group); Send(user); Send(password);
+                    progress?.Invoke("Signing in");
                     var code = SecondFactor();
                     if (code == null) { cancelled = true; break; }
                     Send(code);
@@ -517,6 +506,8 @@ public static class Cisco
             var chunk = new string(buf, 0, n).Replace("\r", "");
             log.Append(chunk);
             pending.Append(chunk);
+            foreach (var line in chunk.Split('\n'))
+                if (line.Contains(">> ") && StatusPolicy.ConnectStep(line) is { } step) progress?.Invoke(step);
 
             var tail = pending.ToString().Split('\n').Last().Trim();
             var low = tail.ToLowerInvariant();
@@ -546,6 +537,7 @@ public static class Cisco
                 if (asked[kind] > 2) { failure = "Login rejected. Check your password and 2FA code."; break; }
                 pending.Clear();
                 Send(reply);
+                if (kind != "yn") progress?.Invoke("Signing in");
                 timing.Add($"{kind} {(DateTime.Now - start).TotalSeconds:0.0}s");
             }
             var all = log.ToString();
@@ -569,7 +561,7 @@ public static class Cisco
         if (cancelled) return (false, null, text);
         if (failure != null) return (false, failure, text);
         // Cisco's own "state: Connected" line is enough; skip the slow `vpncli state` round trip.
-        if (text.Contains("state: Connected") || State() == VpnState.Connected) return (true, null, text);
+        if (text.Contains("state: Connected") || Status().state == VpnState.Connected) return (true, null, text);
         return (false, ConnectPolicy.FailureMessage(text, host, timedOut), text);
     }
 }

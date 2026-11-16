@@ -77,22 +77,12 @@
                 <Ellipse Width="98" Height="98" StrokeThickness="2" Stroke="{Binding Tint}"
                          Visibility="{Binding Lit, Converter={StaticResource BoolToVis}}"/>
                 <!-- spinning arc while working -->
-                <Path Width="98" Height="98" Stroke="#3F86FF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                <Path Width="98" Height="98" Stroke="{Binding Tint}" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                       Data="M49,1 A48,48 0 0 1 97,49" RenderTransformOrigin="0.5,0.5"
                       Visibility="{Binding Busy, Converter={StaticResource BoolToVis}}">
                     <Path.RenderTransform>
                         <RotateTransform x:Name="Spin"/>
                     </Path.RenderTransform>
-                    <Path.Triggers>
-                        <EventTrigger RoutedEvent="Loaded">
-                            <BeginStoryboard>
-                                <Storyboard RepeatBehavior="Forever">
-                                    <DoubleAnimation Storyboard.TargetName="Spin" Storyboard.TargetProperty="Angle"
-                                                     From="0" To="360" Duration="0:0:0.9"/>
-                                </Storyboard>
-                            </BeginStoryboard>
-                        </EventTrigger>
-                    </Path.Triggers>
                 </Path>
                 <Button Click="Toggle_Click" Cursor="Hand" IsEnabled="{Binding NotBusy}" IsDefault="True"
                         AutomationProperties.Name="{Binding ButtonText}">
@@ -122,11 +112,10 @@
 
             <TextBlock Text="{Binding Title}" Foreground="{Binding TitleBrush}" FontSize="18" FontWeight="SemiBold"
                        HorizontalAlignment="Center" Margin="0,14,0,0"/>
-            <!-- live session timer while connected -->
-            <TextBlock Text="{Binding Clock}" FontSize="12" FontWeight="Medium" HorizontalAlignment="Center" Margin="0,3,0,0"
+            <TextBlock Text="{Binding StatusLine}" FontSize="12" FontWeight="Medium" HorizontalAlignment="Center" Margin="0,3,0,0"
+                       Height="17" TextTrimming="CharacterEllipsis"
                        FontFamily="Segoe UI Variable Text, Segoe UI" Typography.NumeralAlignment="Tabular"
-                       Foreground="{DynamicResource TextSecondary}"
-                       Visibility="{Binding Connected, Converter={StaticResource BoolToVis}}"/>
+                       Foreground="{DynamicResource TextSecondary}"/>
 
             <!-- Details -->
             <Border Margin="0,18,0,0" CornerRadius="8" Background="{DynamicResource CardFill}"
