@@ -483,11 +483,11 @@ public static class Cisco
         var blindSent = false;
         var start = DateTime.Now;
         var timing = new List<string>();   // when each step happened, for the event log
-        var deadline = start.AddSeconds(180);
+        var lastOutput = start;
         var buf = new char[4096];
         Task<int>? read = null;
 
-        while (DateTime.Now < deadline)
+        while (ConnectPolicy.TimeoutReason(DateTime.Now, start, lastOutput) == null)
         {
             read ??= p.StandardOutput.ReadAsync(buf, 0, buf.Length);
             if (!read.Wait(500))
@@ -502,12 +502,14 @@ public static class Cisco
                     var code = SecondFactor();
                     if (code == null) { cancelled = true; break; }
                     Send(code);
+                    lastOutput = DateTime.Now;
                 }
                 continue;
             }
             var n = read.Result;
             read = null;
             if (n <= 0) break;
+            lastOutput = DateTime.Now;
             var chunk = new string(buf, 0, n).Replace("\r", "");
             log.Append(chunk);
             pending.Append(chunk);
@@ -530,6 +532,7 @@ public static class Cisco
                 reply = SecondFactor();
                 if (reply == null) { cancelled = true; break; }
                 kind = "otp";
+                lastOutput = DateTime.Now;
             }
             else if (low.EndsWith("password:")) { kind = "password"; reply = password; }
 
@@ -544,7 +547,9 @@ public static class Cisco
             var all = log.ToString();
             if (all.Contains("state: Connected")) { timing.Add($"connected {(DateTime.Now - start).TotalSeconds:0.0}s"); break; }
             if (all.Contains("Login failed")) { failure = "Login rejected. Check your password and 2FA code."; break; }
+            if (ConnectPolicy.ServiceStopped(all)) break;
         }
+        var timedOut = ConnectPolicy.TimeoutReason(DateTime.Now, start, lastOutput);
 
         Log.Write("connect timing: " + string.Join(", ", timing));
         // Do not wait for the CLI to exit; the tunnel is already up (or the login is over).
@@ -561,7 +566,6 @@ public static class Cisco
         if (failure != null) return (false, failure, text);
         // Cisco's own "state: Connected" line is enough; skip the slow `vpncli state` round trip.
         if (text.Contains("state: Connected") || State() == VpnState.Connected) return (true, null, text);
-        var cliError = text.Split('\n').FirstOrDefault(l => l.Contains(">> error:"))?.Split(">> error:").Last().Trim();
-        return (false, cliError ?? $"Could not connect to {host}.", text);
+        return (false, ConnectPolicy.FailureMessage(text, host, timedOut), text);
     }
 }

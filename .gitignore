@@ -4,3 +4,5 @@ windows/bin/
 windows/obj/
 windows/publish/
 .DS_Store
+windows/tests/bin/
+windows/tests/obj/

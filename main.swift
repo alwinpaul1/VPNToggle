@@ -313,15 +313,17 @@ func connect(host: String, group: String, user: String, password: String, pin: S
     var timing: [String] = []   // when each step happened, for the event log
     var ciscoSteps: [String] = []   // Cisco's own status lines with times, for diagnosing slow connects
     var failure: String?, cancelled = false
-    let deadline = Date().addingTimeInterval(180)
+    var lastOutput = Date()
     var buf = [UInt8](repeating: 0, count: 4096)
 
-    // Ends when the CLI exits (read returns EIO) or the deadline passes.
-    readLoop: while Date() < deadline {
+    // Ends when the CLI exits (read returns EIO), the CLI goes quiet for ConnectPolicy.idleLimit,
+    // or ConnectPolicy.hardLimit passes.
+    readLoop: while ConnectPolicy.timeoutReason(now: Date(), started: started, lastOutput: lastOutput) == nil {
         var pfd = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
         if poll(&pfd, 1, 500) <= 0 { if !p.isRunning { break }; continue }
         let n = read(master, &buf, buf.count)
         if n <= 0 { break }
+        lastOutput = Date()
         let chunk = String(decoding: buf[0..<n], as: UTF8.self).replacingOccurrences(of: "\r", with: "")
         log += chunk
         pending += chunk
@@ -347,7 +349,7 @@ func connect(host: String, group: String, user: String, password: String, pin: S
             // PIN, else ask the user for the code.
             if let totpSecret { kind = "otp"; reply = TOTP.freshCode(secret: totpSecret) }
             else if let pin, !pin.isEmpty { kind = "pin"; reply = pin }
-            else if let typed = askForCode(), !typed.isEmpty { kind = "otp"; reply = typed }
+            else if let typed = askForCode(), !typed.isEmpty { kind = "otp"; reply = typed; lastOutput = Date() }
             else { cancelled = true; break readLoop }
         } else if low.hasSuffix("password:") {
             kind = "password"; reply = password
@@ -364,7 +366,9 @@ func connect(host: String, group: String, user: String, password: String, pin: S
             break
         }
         if log.contains("Login failed") { failure = "Login rejected. Check your password and 2FA code."; break }
+        if ConnectPolicy.serviceStopped(log) { break }
     }
+    let timedOut = ConnectPolicy.timeoutReason(now: Date(), started: started, lastOutput: lastOutput)
 
     logEvent("connect timing: " + timing.joined(separator: ", "))
     logEvent("cisco steps: " + ciscoSteps.joined(separator: " | "))
@@ -383,9 +387,7 @@ func connect(host: String, group: String, user: String, password: String, pin: S
     // Cisco's own "state: Connected" line is enough; skip the 2.5 s `vpn state` round trip.
     if log.contains("state: Connected") || currentState() == .connected { return (true, nil, log) }
     // Prefer the CLI's own error line, e.g. ">> error: The requested authentication type is not supported".
-    let cliError = log.components(separatedBy: "\n").first { $0.contains(">> error:") }?
-        .components(separatedBy: ">> error:").last?.trimmingCharacters(in: .whitespaces)
-    return (false, cliError ?? "Could not connect to \(host).", log)
+    return (false, ConnectPolicy.failureMessage(log: log, host: host, timedOut: timedOut), log)
 }
 
 // MARK: - Event log

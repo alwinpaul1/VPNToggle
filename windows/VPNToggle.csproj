@@ -24,5 +24,6 @@
   <ItemGroup>
     <PackageReference Include="ZXing.Net.Bindings.Windows.Compatibility" Version="0.16.14" />
     <Resource Include="app.ico" />
+    <Compile Remove="tests/**" />
   </ItemGroup>
 </Project>

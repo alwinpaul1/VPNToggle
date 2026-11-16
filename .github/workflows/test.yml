@@ -1,0 +1,23 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./tests/run.sh
+      - run: swiftc -O main.swift ConnectPolicy.swift -o VPNToggle -framework Cocoa -framework ServiceManagement
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - run: dotnet test windows/tests/ConnectPolicy.Tests.csproj
+      - run: dotnet build windows/VPNToggle.csproj -c Release
