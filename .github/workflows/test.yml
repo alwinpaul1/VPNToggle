@@ -16,8 +16,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
       - run: dotnet test windows/tests/ConnectPolicy.Tests.csproj
       - run: dotnet build windows/VPNToggle.csproj -c Release
+      - shell: pwsh
+        run: |
+          $tag = (git describe --tags --abbrev=0 --match "v*").TrimStart("v")
+          $dll = Get-ChildItem windows/bin/Release -Recurse -Filter VPNToggle.dll | Select-Object -First 1
+          $v = [System.Reflection.AssemblyName]::GetAssemblyName($dll.FullName).Version
+          Write-Output "tag $tag, assembly $v"
+          if ([version]$tag -ne [version]"$($v.Major).$($v.Minor)") { exit 1 }
