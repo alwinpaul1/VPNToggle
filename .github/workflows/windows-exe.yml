@@ -20,7 +20,7 @@ jobs:
           $tag = (git describe --tags --abbrev=0 --match "v*").TrimStart("v")
           $v = (Get-Item windows/publish/VPNToggle.exe).VersionInfo.FileVersion
           Write-Output "tag $tag, exe $v"
-          if (-not $v.StartsWith("$tag.")) { exit 1 }
+          if ([version]$tag -ne [version]$v) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: VPNToggle-windows
