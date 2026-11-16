@@ -104,6 +104,34 @@ for ($i = 0; $i -lt 50 -and -not $up; $i++) {
 if (-not $up) { Fail "the local server did not start" }
 if (Test-Path $appLog) { Remove-Item $appLog }
 
+function Notices {
+    if (-not (Test-Path $appLog)) { return 0 }
+    return @(Select-String -Path $appLog -SimpleMatch "update notice: VPNToggle").Count
+}
+
+function Notice([string]$argument, [int]$total, [string]$lastLine, [string]$name) {
+    $code = RunBounded $inst $argument 60
+    if ($code -ne 0) { Fail "notice, ${name}: exit code $code" }
+    $count = Notices
+    if ($count -ne $total) { Fail "notice, ${name}: $count notice lines in the log, expected $total" }
+    $last = (Get-Content $appLog | Select-Object -Last 1)
+    if (-not $last.EndsWith($lastLine)) { Fail "notice, ${name}: last log line is '$last'" }
+    Write-Host "ok: notice, $name"
+}
+
+$settingsFile = Join-Path $env:APPDATA "VPNToggle\settings.json"
+if (Test-Path $settingsFile) { Remove-Item $settingsFile }
+Release "v99.0" "$origin/VPNToggle.exe" $good $bytes
+Notice "--update-notice-test --manual" 0 "update notice test: no notice" "manual check stays quiet"
+Notice "--update-notice-test" 1 "update notice test: notice" "first automatic check"
+if (-not (Select-String -Path $appLog -SimpleMatch "update notice: VPNToggle 99.0 is available" -Quiet)) { Fail "notice: wrong text in the log" }
+Notice "--update-notice-test" 1 "update notice test: no notice" "second automatic check for the same release"
+Release "v99.5" "$origin/VPNToggle.exe" $good $bytes
+Notice "--update-notice-test" 2 "update notice test: notice" "a later release"
+Notice "--update-notice-test" 2 "update notice test: no notice" "the later release again"
+Release "v0.1" "$origin/VPNToggle.exe" $good $bytes
+Notice "--update-notice-test" 2 "update notice test: no notice" "release not newer"
+
 Release "v99.0" "$origin/VPNToggle.exe" $oldDigest $bytes
 Refused "bad digest" "DigestMismatch"
 Release "v99.0" "$origin/VPNToggle.exe" "" $bytes

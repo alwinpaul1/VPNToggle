@@ -8,6 +8,7 @@ public static class Program
     public static int Main(string[] args)
     {
         if (NvmPause.RunMode(args) is { } code) return code;
+        if (SelfUpdate.RunNoticeTestMode(args) is { } noticed) return noticed;
         if (SelfUpdate.RunTestMode(args) is { } result) return result;
         App.Main();
         return 0;

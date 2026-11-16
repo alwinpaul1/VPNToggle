@@ -235,4 +235,34 @@ enum UpdatePolicy {
         case .swapFailed(let why): return "The new version could not be put in place. \(why)"
         }
     }
+
+    static let noticeTestFlag = "--update-notice-test"
+
+    enum NoticePermission: Equatable { case allowed, undecided, denied }
+    enum NoticeAction: Equatable { case post, askThenPost, skip }
+
+    static func shouldNotify(latest: String?, current: String, dismissed: String?, notified: String?, manual: Bool) -> Bool {
+        guard !manual, let latest, showsBanner(latest: latest, current: current, dismissed: dismissed) else { return false }
+        if let notified, sameVersion(notified, latest) { return false }
+        return true
+    }
+
+    static func noticeAction(_ permission: NoticePermission) -> NoticeAction {
+        switch permission {
+        case .allowed: return .post
+        case .undecided: return .askThenPost
+        case .denied: return .skip
+        }
+    }
+
+    static func noticeTitle(_ tag: String) -> String {
+        "VPNToggle \(displayVersion(tag)) is available"
+    }
+
+    static let noticeBody = "Click to install"
+    static let noticeIdentifier = "update-available"
+
+    static func opensCard(notificationIdentifier: String) -> Bool {
+        notificationIdentifier == noticeIdentifier
+    }
 }

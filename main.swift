@@ -422,6 +422,36 @@ enum Notify {
         }
     }
 
+    static func permission(_ status: UNAuthorizationStatus) -> UpdatePolicy.NoticePermission {
+        switch status {
+        case .notDetermined: return .undecided
+        case .denied: return .denied
+        default: return .allowed
+        }
+    }
+
+    static func postUpdate(tag: String) {
+        let center = UNUserNotificationCenter.current()
+        let post = {
+            let content = UNMutableNotificationContent()
+            content.title = UpdatePolicy.noticeTitle(tag)
+            content.body = UpdatePolicy.noticeBody
+            content.sound = .default
+            center.add(UNNotificationRequest(identifier: UpdatePolicy.noticeIdentifier, content: content, trigger: nil))
+            logEvent("update notice: shown")
+        }
+        center.getNotificationSettings { settings in
+            switch UpdatePolicy.noticeAction(permission(settings.authorizationStatus)) {
+            case .post: post()
+            case .askThenPost:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    if granted { post() } else { logEvent("update notice: notifications not allowed, banner only") }
+                }
+            case .skip: logEvent("update notice: notifications not allowed, banner only")
+            }
+        }
+    }
+
     static func post(_ title: String, _ body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
@@ -1307,6 +1337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         logEvent("update check: latest \(release.tag), running \(model.currentVersion.isEmpty ? "unknown" : model.currentVersion)")
         if manual && newer { Prefs.d.removeObject(forKey: "updateDismissedTag") }
         renderUpdate()
+        if noteUpdate(tag: release.tag, current: model.currentVersion, manual: manual) { Notify.postUpdate(tag: release.tag) }
         guard manual else { return }
         if newer {
             if !card.isVisible { openCard() }
@@ -1396,6 +1427,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ c: UNUserNotificationCenter, willPresent n: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
         done([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        let identifier = response.notification.request.identifier
+        DispatchQueue.main.async {
+            if UpdatePolicy.opensCard(notificationIdentifier: identifier) {
+                logEvent("update notice: clicked")
+                self.renderUpdate()
+                if !self.card.isVisible { self.openCard() }
+            }
+            done()
+        }
     }
 
     func toggleAutoReconnect() {
@@ -1722,6 +1766,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         model.autoTwoFactor = Keychain.get("totp") != nil
     }
+}
+
+func noteUpdate(tag: String, current: String, manual: Bool) -> Bool {
+    guard UpdatePolicy.shouldNotify(latest: tag, current: current, dismissed: Prefs.d.string(forKey: "updateDismissedTag"),
+                                    notified: Prefs.d.string(forKey: "updateNotifiedTag"), manual: manual) else { return false }
+    Prefs.d.set(tag, forKey: "updateNotifiedTag")
+    logEvent("update notice: \(UpdatePolicy.noticeTitle(tag))")
+    return true
+}
+
+if CommandLine.arguments.contains(UpdatePolicy.noticeTestFlag) {
+    let source = UpdatePolicy.source(testAPI: ProcessInfo.processInfo.environment[UpdatePolicy.testAPIVariable])
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    let file = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("vpntoggle-release-\(UUID().uuidString).json")
+    let listing = UpdateSource(api: source.api, downloadPrefix: source.api, redirectHosts: [], scheme: source.scheme)
+    let failure = SelfUpdate.download(source.api, to: file, source: listing, limit: 4 << 20)
+    let release = (try? Data(contentsOf: file)).flatMap(UpdatePolicy.release(fromJSON:))
+    try? FileManager.default.removeItem(at: file)
+    guard failure == nil, let release else {
+        print("no release")
+        exit(3)
+    }
+    let notify = noteUpdate(tag: release.tag, current: version, manual: CommandLine.arguments.contains("--manual"))
+    Prefs.d.synchronize()
+    print(notify ? "notice: \(UpdatePolicy.noticeTitle(release.tag))" : "no notice")
+    exit(0)
 }
 
 if CommandLine.arguments.contains(UpdatePolicy.testFlag) {

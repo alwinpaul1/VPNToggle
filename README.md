@@ -200,6 +200,11 @@ On both systems the app's version comes from the newest `v*` git tag, so tag a r
 its download. The app compares that version with the latest GitHub release (on start, once a day, and
 from **⋯ → Check for Updates…**) and shows an "Update available" notice in the card when a newer one exists.
 
+When the automatic check finds a new version, the app also shows one notification ("VPNToggle 2.1 is
+available"), once per version and never for a version you dismissed. Clicking it opens the card; it does not
+install anything. On macOS this needs notifications to be allowed for VPNToggle; without that, only the
+notice in the card appears.
+
 **Install update** in that notice downloads the new version, checks it and restarts the app. Nothing is
 installed without that click. The download must come from this repository's releases and match the
 SHA-256 checksum GitHub lists for it. On macOS the new app must also be signed with the same certificate

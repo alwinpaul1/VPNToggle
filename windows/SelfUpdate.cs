@@ -202,6 +202,39 @@ public static class SelfUpdate
         }) { IsBackground = true }.Start();
     }
 
+    public static int? RunNoticeTestMode(string[] args)
+    {
+        if (Array.IndexOf(args, UpdatePolicy.NoticeTestFlag) < 0) return null;
+        var json = Path.Combine(Path.GetTempPath(), $"vpntoggle-release-{Guid.NewGuid():N}.json");
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (exe == null) return 4;
+            var source = UpdatePolicy.Source(Environment.GetEnvironmentVariable(UpdatePolicy.TestApiVariable));
+            using var http = CreateClient();
+            var failed = Download(http, source.Api, json, source, 4 << 20, followRedirects: false);
+            var release = failed == null ? UpdatePolicy.ReleaseFromJson(File.ReadAllText(json)) : null;
+            if (release == null)
+            {
+                Log.Write("update notice test: no release");
+                return 3;
+            }
+            var manual = Array.IndexOf(args, "--manual") >= 0;
+            var notify = UpdateNotice.Note(Settings.Load(), release.Tag, FileVersion(exe) ?? "", manual);
+            Log.Write(notify ? "update notice test: notice" : "update notice test: no notice");
+            return 0;
+        }
+        catch (Exception e)
+        {
+            try { Log.Write($"update notice test: failed: {e}"); } catch { }
+            return 6;
+        }
+        finally
+        {
+            Remove(json);
+        }
+    }
+
     public static int? RunTestMode(string[] args)
     {
         if (Array.IndexOf(args, UpdatePolicy.TestFlag) < 0) return null;

@@ -88,6 +88,8 @@ public sealed class AppController : IDisposable
         // The hover card stands in for the tray tooltip, so the plain tooltip stays empty.
         tray.Text = "";
         tray.MouseMove += (_, _) => hover.PointerOverIcon(() => card.IsVisible);
+        tray.BalloonTipClicked += (_, _) => BalloonClicked();
+        tray.BalloonTipClosed += (_, _) => balloonOpensCard = false;
         tray.MouseUp += (_, e) =>
         {
             if (e.Button != MouseButtons.Left) return;
@@ -340,6 +342,8 @@ public sealed class AppController : IDisposable
         try { settings.Save(); }
         catch (Exception e) { Log.Write($"could not save settings: {e.Message}"); }
         RenderUpdate();
+        if (UpdateNotice.Note(settings, release.Tag, currentVersion, manual))
+            Notify(UpdatePolicy.NoticeTitle(release.Tag), UpdatePolicy.NoticeBody, opensCard: true);
         if (!manual) return;
         if (newer)
         {
@@ -352,7 +356,22 @@ public sealed class AppController : IDisposable
             : $"VPNToggle {currentVersion} is the latest version.");
     }
 
-    void Notify(string title, string body) => tray.ShowBalloonTip(5000, title, body, ToolTipIcon.None);
+    bool balloonOpensCard;
+
+    void Notify(string title, string body, bool opensCard = false)
+    {
+        balloonOpensCard = opensCard;
+        tray.ShowBalloonTip(opensCard ? 10000 : 5000, title, body, ToolTipIcon.None);
+    }
+
+    void BalloonClicked()
+    {
+        if (!balloonOpensCard) return;
+        balloonOpensCard = false;
+        Log.Write("update notice: clicked");
+        RenderUpdate();
+        if (!card.IsVisible) OpenCard(nearTray: true);
+    }
 
     // --- state ---
 

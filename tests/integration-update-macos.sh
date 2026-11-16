@@ -127,6 +127,34 @@ rm -f "$log"
 good=$(digest "$served/VPNToggle-macOS.zip")
 bytes=$(size "$served/VPNToggle-macOS.zip")
 
+notices() {
+  n=$(grep -c "update notice: VPNToggle" "$log" 2>/dev/null)
+  echo "${n:-0}"
+}
+notice() {
+  expected=$1
+  total=$2
+  name=$3
+  shift 3
+  bounded 60 env VPNTOGGLE_UPDATE_TEST_API="$api" "$inst/Contents/MacOS/VPNToggle" --update-notice-test "$@" > "$work/out.txt" 2>&1
+  code=$?
+  cat "$work/out.txt"
+  [ "$code" = 0 ] || fail "notice, $name: exit code $code"
+  grep -qx "$expected" "$work/out.txt" || fail "notice, $name: expected '$expected'"
+  [ "$(notices)" = "$total" ] || fail "notice, $name: $(notices) notice lines in the log, expected $total"
+  echo "ok: notice, $name"
+}
+defaults delete com.alwinpaul.vpntoggle > /dev/null 2>&1
+release v99.0 "$origin/VPNToggle-macOS.zip" "$good" "$bytes"
+notice "no notice" 0 "manual check stays quiet" --manual
+notice "notice: VPNToggle 99.0 is available" 1 "first automatic check"
+notice "no notice" 1 "second automatic check for the same release"
+release v99.5 "$origin/VPNToggle-macOS.zip" "$good" "$bytes"
+notice "notice: VPNToggle 99.5 is available" 2 "a later release"
+notice "no notice" 2 "the later release again"
+release v1.0 "$origin/VPNToggle-macOS.zip" "$good" "$bytes"
+notice "no notice" 2 "release not newer"
+
 release v99.0 "$origin/VPNToggle-macOS.zip" "$(digest "$served/adhoc.zip")" "$bytes"
 refused "bad digest" digestMismatch
 release v99.0 "$origin/VPNToggle-macOS.zip" "" "$bytes"

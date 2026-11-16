@@ -274,4 +274,15 @@ public static class UpdatePolicy
 
     public static bool CopyStale(string? copyVersion, string? runningVersion) =>
         Segments(copyVersion) != null && Segments(runningVersion) != null && !SameVersion(copyVersion, runningVersion);
+
+    public const string NoticeTestFlag = "--update-notice-test";
+    public const string NoticeBody = "Click to install";
+
+    public static bool ShouldNotify(string? latest, string? current, string? dismissed, string? notified, bool manual)
+    {
+        if (manual || latest == null || !ShowsBanner(latest, current, dismissed)) return false;
+        return notified == null || !SameVersion(notified, latest);
+    }
+
+    public static string NoticeTitle(string tag) => $"VPNToggle {DisplayVersion(tag)} is available";
 }

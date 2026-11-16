@@ -29,6 +29,7 @@ public sealed class Settings
     public string? UpdateLatestTag { get; set; }
     public string? UpdateLatestPage { get; set; }
     public string? UpdateDismissedTag { get; set; }
+    public string? UpdateNotifiedTag { get; set; }
 
     static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VPNToggle");
     static string FilePath => Path.Combine(Dir, "settings.json");
@@ -68,6 +69,19 @@ public static class Log
             }
             catch { }
         }
+    }
+}
+
+public static class UpdateNotice
+{
+    public static bool Note(Settings settings, string tag, string current, bool manual)
+    {
+        if (!UpdatePolicy.ShouldNotify(tag, current, settings.UpdateDismissedTag, settings.UpdateNotifiedTag, manual)) return false;
+        settings.UpdateNotifiedTag = tag;
+        try { settings.Save(); }
+        catch (Exception e) { Log.Write($"could not save settings: {e.Message}"); }
+        Log.Write($"update notice: {UpdatePolicy.NoticeTitle(tag)}");
+        return true;
     }
 }
 

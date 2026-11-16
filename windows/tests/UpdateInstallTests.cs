@@ -201,4 +201,31 @@ public class UpdateInstallTests
     [InlineData("1.8", "", false)]
     public void PauseCopyStaleness(string? copy, string running, bool stale) =>
         Assert.Equal(stale, UpdatePolicy.CopyStale(copy, running));
+
+    [Theory]
+    [InlineData("v2.1", "2.0", null, null, false, true)]
+    [InlineData("v2.1", "2.0", null, null, true, false)]
+    [InlineData("v2.1", "2.0", null, "v2.1", false, false)]
+    [InlineData("v2.1.0", "2.0", null, "2.1", false, false)]
+    [InlineData("v2.2", "2.0", null, "v2.1", false, true)]
+    [InlineData("v2.1", "2.0", "v2.1", null, false, false)]
+    [InlineData("v2.2", "2.0", "v2.1", "v2.1", false, true)]
+    [InlineData("v2.0", "2.0", null, null, false, false)]
+    [InlineData("v1.9", "2.0", null, null, false, false)]
+    [InlineData(null, "2.0", null, null, false, false)]
+    [InlineData("v2.1", "", null, null, false, false)]
+    [InlineData("nightly", "2.0", null, null, false, false)]
+    [InlineData("v2.1", "2.0", null, "junk", false, true)]
+    public void NoticeDecision(string? latest, string current, string? dismissed, string? notified, bool manual, bool expected) =>
+        Assert.Equal(expected, UpdatePolicy.ShouldNotify(latest, current, dismissed, notified, manual));
+
+    [Fact] public void NoticeTitleNamesTheVersion() => Assert.Equal("VPNToggle 2.1 is available", UpdatePolicy.NoticeTitle("v2.1"));
+
+    [Fact] public void NoticeTitleKeepsAPatchNumber() => Assert.Equal("VPNToggle 2.1.3 is available", UpdatePolicy.NoticeTitle("v2.1.3"));
+
+    [Fact] public void NoticeTextIsShortAndPlain()
+    {
+        Assert.Equal("Click to install", UpdatePolicy.NoticeBody);
+        Assert.DoesNotContain("!", UpdatePolicy.NoticeTitle("v2.1") + UpdatePolicy.NoticeBody);
+    }
 }
