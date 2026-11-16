@@ -88,6 +88,12 @@ public sealed class CardViewModel : INotifyPropertyChanged
     string updateDetail = "";
     public string UpdateDetail { get => updateDetail; set => Set(ref updateDetail, value); }
 
+    string updateButton = UpdatePolicy.ButtonTitle(UpdatePhase.Idle);
+    public string UpdateButton { get => updateButton; set => Set(ref updateButton, value); }
+
+    bool updateIdle = true;
+    public bool UpdateIdle { get => updateIdle; set => Set(ref updateIdle, value); }
+
     void OnPropertyChanged(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 

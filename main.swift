@@ -767,6 +767,8 @@ final class VPNModel: ObservableObject {
     @Published var nvmPause = NVMPause.Status.off
     @Published var autoTwoFactor = false
     @Published var updateVersion: String?
+    @Published var updatePhase = UpdatePhase.idle
+    @Published var nvmHelperOutdated = false
     @Published var step: String?
     @Published var reconnectNote: String?
     @Published var cardVisible = false
@@ -854,7 +856,7 @@ struct CardView: View {
                 Toggle("Launch at Login", systemImage: "power", isOn: Binding(get: { m.launchAtLogin }, set: { _ in m.onLaunchAtLogin() }))
                 Toggle(isOn: Binding(get: { m.nvmPause != .off }, set: { _ in m.onNVMPause() })) {
                     Text(NVMPause.title)
-                    Text(NVMPause.note(m.nvmPause))
+                    Text(NVMPause.note(m.nvmPause, helperOutdated: m.nvmHelperOutdated))
                 }
                 if let ip = m.ip, m.connected {
                     Button("Copy IP Address", systemImage: "doc.on.doc") {
@@ -884,16 +886,18 @@ struct CardView: View {
                 .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Update available").font(.system(size: 12, weight: .semibold))
-                Text(m.currentVersion.isEmpty ? "Version \(version)" : "Version \(version) · you have \(m.currentVersion)")
+                Text(UpdatePolicy.busy(m.updatePhase) ? UpdatePolicy.buttonTitle(m.updatePhase)
+                     : (m.currentVersion.isEmpty ? "Version \(version)" : "Version \(version) · you have \(m.currentVersion)"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            Button("Update", action: m.onOpenUpdate)
+            Button(UpdatePolicy.buttonTitle(m.updatePhase), action: m.onOpenUpdate)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .accessibilityLabel("Open the download page for version \(version)")
+                .disabled(UpdatePolicy.busy(m.updatePhase))
+                .accessibilityLabel("Download and install version \(version)")
             Button(action: m.onDismissUpdate) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
@@ -1188,7 +1192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.onOpenLog = { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/VPNToggle.log")) }
         model.onCheckForUpdates = { [weak self] in self?.checkForUpdates(manual: true) }
         model.onNVMPause = { [weak self] in self?.toggleNVMPause() }
-        model.onOpenUpdate = { [weak self] in self?.openUpdatePage() }
+        model.onOpenUpdate = { [weak self] in self?.installUpdate() }
         model.onDismissUpdate = { [weak self] in self?.dismissUpdate() }
 
         hover.blocked = { [weak self] in self?.model.cardVisible ?? false }
@@ -1223,6 +1227,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard let self, self.card.isVisible, let f = self.iconFrame else { return }
             self.card.show(under: f, makeKey: true)
         }
+    }
+
+    func installUpdate() {
+        guard !UpdatePolicy.busy(model.updatePhase) else { return }
+        model.updatePhase = UpdatePolicy.next(model.updatePhase, .start)
+        let bundle = Bundle.main.bundleURL
+        let version = model.currentVersion
+        logEvent("update: install requested, running \(version.isEmpty ? "unknown" : version)")
+        DispatchQueue.global().async {
+            let refusal = SelfUpdate.run(current: bundle, currentVersion: version, source: UpdatePolicy.production) { event in
+                DispatchQueue.main.async { self.model.updatePhase = UpdatePolicy.next(self.model.updatePhase, event) }
+            }
+            DispatchQueue.main.async {
+                if let refusal {
+                    self.model.updatePhase = UpdatePolicy.next(self.model.updatePhase, .reset)
+                    logEvent("update: not installed: \(refusal)")
+                    self.showUpdateFailure(refusal)
+                    return
+                }
+                self.model.updatePhase = .relaunching
+                logEvent("update: installed, restarting")
+                SelfUpdate.relaunch(bundle: bundle, afterExitOf: ProcessInfo.processInfo.processIdentifier)
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    func showUpdateFailure(_ refusal: UpdateRefusal) {
+        closeCard()
+        let a = NSAlert()
+        a.messageText = "The update was not installed"
+        a.informativeText = UpdatePolicy.message(refusal) + " You can download it from the release page instead."
+        a.addButton(withTitle: "Open Release Page")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn { openUpdatePage() }
     }
 
     func openUpdatePage() {
@@ -1310,7 +1350,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func refreshNVMPause() {
         DispatchQueue.global().async {
             let status = NVMPause.currentStatus()
-            DispatchQueue.main.async { self.model.set(\.nvmPause, status) }
+            let outdated = NVMPause.helperOutdated(
+                bundled: (Bundle.main.resourcePath).flatMap { FileManager.default.contents(atPath: $0 + "/nvm-pause/vpn-toggle-watch.sh") },
+                installed: FileManager.default.contents(atPath: NVMPause.scriptPath))
+            DispatchQueue.main.async {
+                self.model.set(\.nvmPause, status)
+                self.model.set(\.nvmHelperOutdated, outdated)
+            }
         }
     }
 
@@ -1676,6 +1722,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         model.autoTwoFactor = Keychain.get("totp") != nil
     }
+}
+
+if CommandLine.arguments.contains(UpdatePolicy.testFlag) {
+    let source = UpdatePolicy.source(testAPI: ProcessInfo.processInfo.environment[UpdatePolicy.testAPIVariable])
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    let refusal = SelfUpdate.run(current: Bundle.main.bundleURL, currentVersion: version, source: source)
+    if let refusal {
+        logEvent("update test: not installed: \(refusal)")
+        print("refused: \(refusal)")
+        exit(3)
+    }
+    logEvent("update test: installed, restarting")
+    print("installed")
+    SelfUpdate.relaunch(bundle: Bundle.main.bundleURL, afterExitOf: ProcessInfo.processInfo.processIdentifier)
+    exit(0)
 }
 
 let app = NSApplication.shared

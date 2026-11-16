@@ -33,11 +33,17 @@ public partial class App : Application
         var command = CommandFrom(e.Args);
         // Started by Windows at sign-in: stay quietly in the tray. Started by hand: show the card,
         // so it is obvious the app is running (its tray icon may sit in the hidden ^ overflow).
-        var quiet = command == "startup";
+        var updated = command == "updated";
+        var quiet = command == "startup" || updated;
         if (quiet) command = null;
 
         // One copy only; a second launch hands its command to the running copy and exits.
         single = new Mutex(true, @"Local\VPNToggle", out var first);
+        if (!first && updated)
+        {
+            try { first = single.WaitOne(TimeSpan.FromSeconds(15)); }
+            catch (AbandonedMutexException) { first = true; }
+        }
         if (!first)
         {
             // Already running: a plain second launch brings up the card instead of doing nothing.
@@ -56,12 +62,14 @@ public partial class App : Application
             return;
         }
 
+        SelfUpdate.CleanUp();
         RegisterUrlScheme();
         Shortcuts.EnsureStartMenu();
         Theme.Apply();
         Theme.Watch();
         controller = new AppController();
         ListenForCommands();
+        if (updated) controller.AfterUpdate();
         if (command != null) controller.Handle(command);
         else if (!quiet) controller.FirstShow();
     }

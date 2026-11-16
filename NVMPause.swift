@@ -13,7 +13,15 @@ enum NVMPause {
         return plistInstalled ? .notRunning : .off
     }
 
-    static func note(_ status: Status) -> String {
+    static let scriptPath = "/usr/local/sbin/vpn-toggle-watch.sh"
+
+    static func helperOutdated(bundled: Data?, installed: Data?) -> Bool {
+        guard let bundled, let installed else { return false }
+        return bundled != installed
+    }
+
+    static func note(_ status: Status, helperOutdated: Bool = false) -> String {
+        if helperOutdated && status != .off { return "Installed from an older version. Turn it off and on to refresh it" }
         switch status {
         case .off: return summary
         case .active: return "Active. " + summary

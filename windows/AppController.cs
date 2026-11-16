@@ -74,7 +74,7 @@ public sealed class AppController : IDisposable
         card.NvmPauseStatus = NvmPause.CurrentStatus;
         card.NvmPauseRequested = ChangeNvmPause;
         card.CheckForUpdatesRequested += () => CheckForUpdates(manual: true);
-        card.UpdateRequested += OpenUpdatePage;
+        card.UpdateRequested += InstallUpdate;
         card.UpdateDismissed += DismissUpdate;
         vm.AutoReconnectChanged += on =>
         {
@@ -219,6 +219,58 @@ public sealed class AppController : IDisposable
         var shows = latest != null && UpdatePolicy.ShowsBanner(latest, currentVersion, settings.UpdateDismissedTag);
         vm.UpdateDetail = shows && latest != null ? $"Version {UpdatePolicy.DisplayVersion(latest)} · you have {currentVersion}" : "";
         vm.UpdateAvailable = shows;
+    }
+
+    UpdatePhase updatePhase = UpdatePhase.Idle;
+
+    void SetUpdatePhase(UpdatePhase phase)
+    {
+        updatePhase = phase;
+        vm.UpdateButton = UpdatePolicy.ButtonTitle(phase);
+        vm.UpdateIdle = !UpdatePolicy.Busy(phase);
+    }
+
+    void InstallUpdate()
+    {
+        if (UpdatePolicy.Busy(updatePhase)) return;
+        var exe = Environment.ProcessPath;
+        if (exe == null) { OpenUpdatePage(); return; }
+        SetUpdatePhase(UpdatePolicy.Next(updatePhase, UpdateEvent.Start));
+        Log.Write($"update: install requested, running {(currentVersion.Length == 0 ? "unknown" : currentVersion)}");
+        Task.Run(() =>
+        {
+            var refusal = SelfUpdate.Run(exe, currentVersion, UpdatePolicy.Production,
+                e => ui.BeginInvoke(() => SetUpdatePhase(UpdatePolicy.Next(updatePhase, e))));
+            ui.BeginInvoke(() =>
+            {
+                if (refusal == null && SelfUpdate.StartNew(exe))
+                {
+                    SetUpdatePhase(UpdatePhase.Relaunching);
+                    Log.Write("update: installed, restarting");
+                    Quit();
+                    return;
+                }
+                SetUpdatePhase(UpdatePolicy.Next(updatePhase, UpdateEvent.Reset));
+                var reason = refusal == null
+                    ? "The new version is in place but could not be started. Start VPNToggle again by hand."
+                    : UpdatePolicy.Message(refusal);
+                Log.Write($"update: not installed: {refusal?.Kind.ToString() ?? "start failed"} {refusal?.Detail}".TrimEnd());
+                card.HideCard();
+                var answer = System.Windows.MessageBox.Show(reason + "\n\nOpen the release page to download it yourself?",
+                    "The update was not installed", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+                if (answer == System.Windows.MessageBoxResult.Yes) OpenUpdatePage();
+            });
+        });
+    }
+
+    public void AfterUpdate()
+    {
+        Log.Write($"update: now running {(currentVersion.Length == 0 ? "unknown" : currentVersion)}");
+        if (!NvmPause.CopyStale(currentVersion)) return;
+        var answer = System.Windows.MessageBox.Show(
+            "The Network Visibility pause still runs the previous version of VPNToggle. Refresh it now? Windows will ask for administrator rights once.",
+            "VPNToggle was updated", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+        if (answer == System.Windows.MessageBoxResult.Yes) ChangeNvmPause(NvmStatus.Off);
     }
 
     void OpenUpdatePage()

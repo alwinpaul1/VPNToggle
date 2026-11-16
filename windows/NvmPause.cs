@@ -235,6 +235,16 @@ public static class NvmPause
         _ => null,
     };
 
+    public static bool CopyStale(string runningVersion)
+    {
+        try
+        {
+            if (!File.Exists(InstalledExe)) return false;
+            return UpdatePolicy.CopyStale(FileVersionInfo.GetVersionInfo(InstalledExe).FileVersion, runningVersion);
+        }
+        catch { return false; }
+    }
+
     public static NvmStatus CurrentStatus()
     {
         var pausers = Pausers();

@@ -200,4 +200,14 @@ On both systems the app's version comes from the newest `v*` git tag, so tag a r
 its download. The app compares that version with the latest GitHub release (on start, once a day, and
 from **⋯ → Check for Updates…**) and shows an "Update available" notice in the card when a newer one exists.
 
+**Install update** in that notice downloads the new version, checks it and restarts the app. Nothing is
+installed without that click. The download must come from this repository's releases and match the
+SHA-256 checksum GitHub lists for it. On macOS the new app must also be signed with the same certificate
+as the running one, so the release has to be built with the same `VPNToggle Local Signing` identity; a copy
+built without a certificate cannot update itself. On Windows the program file is replaced in place and the
+previous one is removed on the next start; the file is not Authenticode signed, so the checksum is the only
+check there. If anything fails, or the app cannot write to its own folder, it offers the release page
+instead. After an update the Network Visibility pause keeps running its previous helper: Windows asks once
+whether to refresh it, and on macOS the menu line says so if the helper script changed.
+
 No other dependencies: it uses only Apple's frameworks (AppKit, SwiftUI, AVFoundation, Vision).

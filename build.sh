@@ -7,6 +7,7 @@ if [ "$1" = "--no-install" ]; then INSTALL=0; fi
 # Version from the newest release tag (v1.4 -> 1.4); build number = commit count.
 VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')
 VERSION=${VERSION:-0.0}
+VERSION=${VPNTOGGLE_VERSION:-$VERSION}
 BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 1)
 APP=build/VPNToggle.app
 rm -rf build && mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
@@ -17,7 +18,7 @@ for s in 16 32 128 256 512; do
   rsvg-convert -w $((s*2)) -h $((s*2)) icon/icon.svg -o $ICONSET/icon_${s}x${s}@2x.png
 done
 iconutil -c icns $ICONSET -o $APP/Contents/Resources/AppIcon.icns
-swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift StatusSession.swift NVMPause.swift EventLog.swift -o $APP/Contents/MacOS/VPNToggle -framework Cocoa -framework ServiceManagement
+swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift StatusSession.swift NVMPause.swift EventLog.swift SelfUpdate.swift -o $APP/Contents/MacOS/VPNToggle -framework Cocoa -framework ServiceManagement
 mkdir -p $APP/Contents/Resources/nvm-pause
 cp nvm-pause/vpn-toggle-watch.sh nvm-pause/local.vpn-toggle.plist nvm-pause/install.sh nvm-pause/uninstall.sh $APP/Contents/Resources/nvm-pause/
 cat > $APP/Contents/Info.plist <<PLIST
