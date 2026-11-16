@@ -4,7 +4,7 @@ enum NVMPause {
     static let label = "local.vpn-toggle"
     static let plistPath = "/Library/LaunchDaemons/local.vpn-toggle.plist"
     static let title = "Pause Cisco Network Visibility"
-    static let summary = "Saves about one CPU core; Network Visibility stops reporting"
+    static let summary = "Frees a CPU core · stops usage reports"
 
     enum Status: Equatable { case off, active, notRunning }
 
@@ -21,11 +21,11 @@ enum NVMPause {
     }
 
     static func note(_ status: Status, helperOutdated: Bool = false) -> String {
-        if helperOutdated && status != .off { return "Installed from an older version. Turn it off and on to refresh it" }
+        if helperOutdated && status != .off { return "Outdated · turn off and on to update" }
         switch status {
         case .off: return summary
-        case .active: return "Active. " + summary
-        case .notRunning: return "Installed but not running. Turn it off and on again"
+        case .active: return "Running · frees a CPU core"
+        case .notRunning: return "Not running · turn off and on to restart"
         }
     }
 

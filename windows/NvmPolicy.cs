@@ -20,7 +20,7 @@ public static class NvmPolicy
     public const string InstallArgument = "--nvm-install";
     public const string UninstallArgument = "--nvm-uninstall";
     public const string Title = "Pause Cisco Network Visibility";
-    public const string Summary = "Saves about one CPU core; Network Visibility stops reporting";
+    public const string Summary = "Frees a CPU core · stops usage reports";
     public const int ResumeLimit = 16;
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(1);
 
@@ -59,8 +59,8 @@ public static class NvmPolicy
 
     public static string Note(NvmStatus status) => status switch
     {
-        NvmStatus.Active => "Active. " + Summary,
-        NvmStatus.NotRunning => "Installed but not running. Turn it off and on again",
+        NvmStatus.Active => "Running · frees a CPU core",
+        NvmStatus.NotRunning => "Not running · turn off and on to restart",
         _ => Summary,
     };
 

@@ -13,9 +13,9 @@ enum NVMPauseTests {
         flag("pause: active uninstalls", NVMPause.installs(from: .active), false)
         flag("pause: not running uninstalls", NVMPause.installs(from: .notRunning), false)
         check("pause: note when off", NVMPause.note(.off), NVMPause.summary)
-        flag("pause: note says active", NVMPause.note(.active).hasPrefix("Active. "), true)
+        flag("pause: note says active", NVMPause.note(.active).hasPrefix("Running"), true)
         flag("pause: summary names the saving and the lost reports",
-             NVMPause.summary.contains("CPU core") && NVMPause.summary.contains("stops reporting"), true)
+             NVMPause.summary.contains("CPU core") && NVMPause.summary.contains("stops usage reports"), true)
 
         check("pause: plain path quoted", NVMPause.shellQuoted("/a/b c"), "'/a/b c'")
         check("pause: apostrophe in a path quoted", NVMPause.shellQuoted("/Users/o'neil/x"), "'/Users/o'\\''neil/x'")

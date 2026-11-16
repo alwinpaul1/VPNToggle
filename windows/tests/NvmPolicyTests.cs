@@ -93,12 +93,12 @@ public class NvmPolicyTests
 
     [Fact] public void NoteWhenOffIsTheSummary() => Assert.Equal(NvmPolicy.Summary, NvmPolicy.Note(NvmStatus.Off));
 
-    [Fact] public void NoteSaysActive() => Assert.StartsWith("Active. ", NvmPolicy.Note(NvmStatus.Active));
+    [Fact] public void NoteSaysActive() => Assert.StartsWith("Running", NvmPolicy.Note(NvmStatus.Active));
 
     [Fact] public void SummaryNamesTheSavingAndTheLostReports()
     {
         Assert.Contains("CPU core", NvmPolicy.Summary);
-        Assert.Contains("stops reporting", NvmPolicy.Summary);
+        Assert.Contains("stops usage reports", NvmPolicy.Summary);
     }
 
     [Fact] public void InstalledExeIsUnderProgramFiles() =>

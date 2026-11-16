@@ -152,7 +152,7 @@ enum SelfUpdateTests {
         flag("pause helper: same script is current", NVMPause.helperOutdated(bundled: Data("a".utf8), installed: Data("a".utf8)), false)
         flag("pause helper: different script is outdated", NVMPause.helperOutdated(bundled: Data("a".utf8), installed: Data("b".utf8)), true)
         flag("pause helper: not installed is not outdated", NVMPause.helperOutdated(bundled: Data("a".utf8), installed: nil), false)
-        flag("pause helper: note asks for a refresh", NVMPause.note(.active, helperOutdated: true).contains("refresh"), true)
+        flag("pause helper: note asks for an update", NVMPause.note(.active, helperOutdated: true).hasPrefix("Outdated"), true)
         check("pause helper: no note when off", NVMPause.note(.off, helperOutdated: true), NVMPause.summary)
     }
 
