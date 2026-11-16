@@ -408,16 +408,7 @@ func connect(host: String, group: String, user: String, password: String, pin: S
 
 /// Appends one timestamped line to ~/Library/Logs/VPNToggle.log, so a drop can be told apart from a click.
 func logEvent(_ text: String) {
-    let url = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/VPNToggle.log")
-    let f = DateFormatter()
-    f.locale = Locale(identifier: "en_US_POSIX")
-    f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-    let line = Data("\(f.string(from: Date()))  \(text)\n".utf8)
-    if let h = try? FileHandle(forWritingTo: url) {
-        h.seekToEndOfFile(); h.write(line); try? h.close()
-    } else {
-        try? line.write(to: url)
-    }
+    EventLog.append(text, to: NSHomeDirectory() + "/Library/Logs/VPNToggle.log")
 }
 
 // MARK: - Notifications

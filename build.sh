@@ -17,7 +17,7 @@ for s in 16 32 128 256 512; do
   rsvg-convert -w $((s*2)) -h $((s*2)) icon/icon.svg -o $ICONSET/icon_${s}x${s}@2x.png
 done
 iconutil -c icns $ICONSET -o $APP/Contents/Resources/AppIcon.icns
-swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift StatusSession.swift NVMPause.swift -o $APP/Contents/MacOS/VPNToggle -framework Cocoa -framework ServiceManagement
+swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift StatusSession.swift NVMPause.swift EventLog.swift -o $APP/Contents/MacOS/VPNToggle -framework Cocoa -framework ServiceManagement
 mkdir -p $APP/Contents/Resources/nvm-pause
 cp nvm-pause/vpn-toggle-watch.sh nvm-pause/local.vpn-toggle.plist nvm-pause/install.sh nvm-pause/uninstall.sh $APP/Contents/Resources/nvm-pause/
 cat > $APP/Contents/Info.plist <<PLIST

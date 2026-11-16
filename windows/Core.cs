@@ -55,14 +55,19 @@ public static class Log
     public static string FilePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VPNToggle", "VPNToggle.log");
 
+    static readonly object writeLock = new();
+
     public static void Write(string text)
     {
-        try
+        lock (writeLock)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.AppendAllText(FilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {text}{Environment.NewLine}");
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+                File.AppendAllText(FilePath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {text}{Environment.NewLine}");
+            }
+            catch { }
         }
-        catch { }
     }
 }
 
