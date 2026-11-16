@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../ConnectPolicy.cs" Link="ConnectPolicy.cs" />
+    <Compile Include="../UpdatePolicy.cs" Link="UpdatePolicy.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />

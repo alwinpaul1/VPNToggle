@@ -726,13 +726,18 @@ final class VPNModel: ObservableObject {
     @Published var autoReconnect = true
     @Published var launchAtLogin = false
     @Published var autoTwoFactor = false
+    @Published var updateVersion: String?
     var host: String { Prefs.host }
+    var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
 
     var onToggle: () -> Void = {}
     var onCredentials: () -> Void = {}
     var onAutoReconnect: () -> Void = {}
     var onLaunchAtLogin: () -> Void = {}
     var onOpenLog: () -> Void = {}
+    var onCheckForUpdates: () -> Void = {}
+    var onOpenUpdate: () -> Void = {}
+    var onDismissUpdate: () -> Void = {}
 
     var connected: Bool { state == .connected && activity == nil }
     var tint: Color {
@@ -769,6 +774,9 @@ struct CardView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let version = m.updateVersion {
+                updateBanner(version)
+            }
             hero
             details
         }
@@ -799,6 +807,7 @@ struct CardView: View {
                     }
                 }
                 Button("Show Log", systemImage: "list.bullet.rectangle", action: m.onOpenLog)
+                Button("Check for Updates…", systemImage: "arrow.down.circle", action: m.onCheckForUpdates)
                 Divider()
                 Button("Quit VPNToggle", systemImage: "xmark.circle") { NSApp.terminate(nil) }
             } label: {
@@ -810,6 +819,41 @@ struct CardView: View {
             .menuIndicator(.hidden)
             .fixedSize()
         }
+    }
+
+    func updateBanner(_ version: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Update available").font(.system(size: 12, weight: .semibold))
+                Text(m.currentVersion.isEmpty ? "Version \(version)" : "Version \(version) · you have \(m.currentVersion)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button("Update", action: m.onOpenUpdate)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .accessibilityLabel("Open the download page for version \(version)")
+            Button(action: m.onDismissUpdate) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Hide until the next version")
+            .accessibilityLabel("Dismiss update notice")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.top, 14)
     }
 
     /// The power switch, NordVPN-style restraint: neutral glass in every state; the state shows in the
@@ -1000,6 +1044,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var autoReconnect: Bool { Prefs.d.object(forKey: "autoReconnect") as? Bool ?? true }
     var working = false
     var activity: String?
+    var checkingForUpdates = false
     let queue = DispatchQueue(label: "vpn")
 
     func applicationWillFinishLaunching(_ n: Notification) {
@@ -1043,6 +1088,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self?.model.launchAtLogin = LoginItem.enabled
         }
         model.onOpenLog = { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/VPNToggle.log")) }
+        model.onCheckForUpdates = { [weak self] in self?.checkForUpdates(manual: true) }
+        model.onOpenUpdate = { [weak self] in self?.openUpdatePage() }
+        model.onDismissUpdate = { [weak self] in self?.dismissUpdate() }
 
         hover.blocked = { [weak self] in self?.card.isVisible ?? false }
         render()
@@ -1055,6 +1103,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         logEvent("app started")
         Notify.setUp(delegate: self)
         if Keychain.get("password") == nil { editCredentials() }
+        renderUpdate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.checkForUpdates(manual: false) }
+        Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            guard UpdatePolicy.shouldCheck(now: Date(), lastCheck: Prefs.d.object(forKey: "updateLastCheck") as? Date) else { return }
+            self?.checkForUpdates(manual: false)
+        }
+    }
+
+    func renderUpdate() {
+        let latest = Prefs.d.string(forKey: "updateLatestTag")
+        let shows = UpdatePolicy.showsBanner(latest: latest, current: model.currentVersion,
+                                             dismissed: Prefs.d.string(forKey: "updateDismissedTag"))
+        let version = shows ? latest.map(UpdatePolicy.displayVersion) : nil
+        guard version != model.updateVersion else { return }
+        model.updateVersion = version
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.card.isVisible, let f = self.iconFrame else { return }
+            self.card.show(under: f, makeKey: true)
+        }
+    }
+
+    func openUpdatePage() {
+        closeCard()
+        guard let url = URL(string: UpdatePolicy.page(Prefs.d.string(forKey: "updateLatestPage"))) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func dismissUpdate() {
+        Prefs.d.set(Prefs.d.string(forKey: "updateLatestTag"), forKey: "updateDismissedTag")
+        renderUpdate()
+    }
+
+    func checkForUpdates(manual: Bool) {
+        guard !checkingForUpdates, let url = URL(string: UpdatePolicy.latestReleaseAPI) else { return }
+        checkingForUpdates = true
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        request.setValue(UpdatePolicy.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode
+            let release = status == 200 ? data.flatMap(UpdatePolicy.release(fromJSON:)) : nil
+            let failure = error?.localizedDescription
+                ?? (status == 200 ? "GitHub's answer could not be read." : "GitHub answered with status \(status ?? 0).")
+            DispatchQueue.main.async { [weak self] in
+                self?.finishUpdateCheck(release: release, failure: failure, manual: manual)
+            }
+        }.resume()
+    }
+
+    func finishUpdateCheck(release: ReleaseInfo?, failure: String, manual: Bool) {
+        checkingForUpdates = false
+        guard let release else {
+            logEvent("update check failed: \(failure)")
+            if manual { closeCard(); showError(failure, title: "Could not check for updates") }
+            return
+        }
+        Prefs.d.set(Date(), forKey: "updateLastCheck")
+        Prefs.d.set(release.tag, forKey: "updateLatestTag")
+        Prefs.d.set(release.page, forKey: "updateLatestPage")
+        let newer = UpdatePolicy.isNewer(release.tag, than: model.currentVersion)
+        logEvent("update check: latest \(release.tag), running \(model.currentVersion.isEmpty ? "unknown" : model.currentVersion)")
+        if manual && newer { Prefs.d.removeObject(forKey: "updateDismissedTag") }
+        renderUpdate()
+        guard manual else { return }
+        if newer {
+            if !card.isVisible { openCard() }
+            return
+        }
+        closeCard()
+        let a = NSAlert()
+        a.messageText = "You're up to date"
+        a.informativeText = model.currentVersion.isEmpty
+            ? "The latest release is VPNToggle \(UpdatePolicy.displayVersion(release.tag))."
+            : "VPNToggle \(model.currentVersion) is the latest version."
+        a.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
     }
 
     // A click opens (or closes) the card.

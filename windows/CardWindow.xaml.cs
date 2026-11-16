@@ -82,6 +82,12 @@ public sealed class CardViewModel : INotifyPropertyChanged
     string hoverDetail = "";
     public string HoverDetail { get => hoverDetail; set => Set(ref hoverDetail, value); }
 
+    bool updateAvailable;
+    public bool UpdateAvailable { get => updateAvailable; set => Set(ref updateAvailable, value); }
+
+    string updateDetail = "";
+    public string UpdateDetail { get => updateDetail; set => Set(ref updateDetail, value); }
+
     Brush buttonBrush = Brushes.SteelBlue;
     public Brush ButtonBrush { get => buttonBrush; set => Set(ref buttonBrush, value); }
 
@@ -93,6 +99,9 @@ public partial class CardWindow : Window
     public event Action? ToggleRequested;
     public event Action? CredentialsRequested;
     public event Action? QuitRequested;
+    public event Action? CheckForUpdatesRequested;
+    public event Action? UpdateRequested;
+    public event Action? UpdateDismissed;
     public Func<bool> LaunchAtLogin = () => false;
     public Action<bool> SetLaunchAtLogin = _ => { };
     public Func<string?> CurrentIp = () => null;
@@ -105,9 +114,18 @@ public partial class CardWindow : Window
         SourceInitialized += (_, _) => Theme.StyleWindow(this, acrylic: true);
         Theme.Changed += () => { if (IsLoaded) Theme.StyleWindow(this, acrylic: true); };
         Deactivated += (_, _) => HideCard();
+        SizeChanged += (_, e) =>
+        {
+            if (IsVisible && e.HeightChanged && e.PreviousSize.Height > 0 && SystemParameters.WorkArea.Top <= 0)
+                Top -= e.NewSize.Height - e.PreviousSize.Height;
+        };
     }
 
     void Toggle_Click(object sender, RoutedEventArgs e) => ToggleRequested?.Invoke();
+
+    void Update_Click(object sender, RoutedEventArgs e) => UpdateRequested?.Invoke();
+
+    void DismissUpdate_Click(object sender, RoutedEventArgs e) => UpdateDismissed?.Invoke();
 
     void More_Click(object sender, RoutedEventArgs e)
     {
@@ -124,6 +142,7 @@ public partial class CardWindow : Window
         Item("Launch at startup", () => SetLaunchAtLogin(!LaunchAtLogin()), LaunchAtLogin());
         if (CurrentIp() is { } ip) Item("Copy IP address", () => Clipboard.SetText(ip));
         Item("Show log", () => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Log.FilePath) { UseShellExecute = true }));
+        Item("Check for updates…", () => CheckForUpdatesRequested?.Invoke());
         menu.Items.Add(new Separator());
         Item("Quit VPNToggle", () => QuitRequested?.Invoke());
         menu.IsOpen = true;

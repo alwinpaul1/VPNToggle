@@ -20,10 +20,23 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>none</DebugType>
+    <Version>0.0.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="ZXing.Net.Bindings.Windows.Compatibility" Version="0.16.14" />
     <Resource Include="app.ico" />
     <Compile Remove="tests/**" />
   </ItemGroup>
+  <Target Name="VersionFromGitTag" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo">
+    <Exec Command="git describe --tags --abbrev=0 --match &quot;v*&quot;" WorkingDirectory="$(MSBuildProjectDirectory)"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true" ContinueOnError="true"
+          StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitTag" />
+      <Output TaskParameter="ExitCode" PropertyName="GitTagExitCode" />
+    </Exec>
+    <PropertyGroup Condition="'$(GitTagExitCode)' == '0' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(GitTag)', '^v[0-9]+(\.[0-9]+)?(\.[0-9]+)?$'))">
+      <Version>$(GitTag.Substring(1))</Version>
+      <AssemblyVersion>$(GitTag.Substring(1))</AssemblyVersion>
+    </PropertyGroup>
+  </Target>
 </Project>

@@ -110,7 +110,7 @@ field empty and type the code yourself.
 - **Power button**: one click connects, one click disconnects. The ring turns green when you
   are connected.
 - **Hover over the icon**: a small status bubble.
-- **⋯ menu**: Credentials, Launch at startup/login, Copy IP address, Show log, Quit.
+- **⋯ menu**: Credentials, Launch at startup/login, Copy IP address, Show log, Check for updates, Quit.
 - **Auto-reconnect** (switch in the card): if the VPN drops, the app reconnects by itself.
 
 For scripts and shortcuts: `vpntoggle://connect`, `vpntoggle://disconnect`,
@@ -189,6 +189,8 @@ Dependencies are downloaded automatically: ZXing.Net (QR codes) and the Windows 
 ./build.sh      # builds and installs ~/Applications/VPNToggle.app
 ```
 
-The app's version comes from the newest `v*` git tag, so tag a release before building its zip.
+On both systems the app's version comes from the newest `v*` git tag, so tag a release before building
+its download. The app compares that version with the latest GitHub release (on start, once a day, and
+from **⋯ → Check for Updates…**) and shows an "Update available" notice in the card when a newer one exists.
 
 No other dependencies: it uses only Apple's frameworks (AppKit, SwiftUI, AVFoundation, Vision).

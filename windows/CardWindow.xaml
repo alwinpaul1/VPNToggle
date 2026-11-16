@@ -33,6 +33,36 @@
                 </Button>
             </Grid>
 
+            <Border Margin="0,14,0,0" CornerRadius="8" Background="{DynamicResource CardFill}"
+                    BorderBrush="{DynamicResource CardStroke}" BorderThickness="1" Padding="12,8,8,8"
+                    Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="&#xE896;" FontFamily="{StaticResource Icons}" FontSize="16" VerticalAlignment="Center"
+                               Foreground="{DynamicResource Accent}"/>
+                    <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                        <TextBlock Text="Update available" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="{Binding UpdateDetail}" FontSize="12" TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource TextSecondary}"/>
+                    </StackPanel>
+                    <Button Grid.Column="2" Style="{StaticResource PrimaryButton}" Background="{DynamicResource Accent}"
+                            Width="66" Height="28" Click="Update_Click" ToolTip="Open the download page"
+                            AutomationProperties.Name="Open the download page for the new version">
+                        <TextBlock Text="Update" FontSize="12" FontWeight="SemiBold" Foreground="White"/>
+                    </Button>
+                    <Button Grid.Column="3" Style="{StaticResource IconButton}" Width="24" Height="24" Margin="6,0,0,0"
+                            Click="DismissUpdate_Click" ToolTip="Hide until the next version"
+                            AutomationProperties.Name="Dismiss update notice">
+                        <TextBlock Text="&#xE711;" FontFamily="{StaticResource Icons}" FontSize="10"/>
+                    </Button>
+                </Grid>
+            </Border>
+
             <!-- Power switch: neutral in every state; the state shows in the symbol colour, a slim ring,
                  the coloured status word and the card's hairline outline (NordVPN-style restraint). -->
             <Grid Margin="0,22,0,0" HorizontalAlignment="Center" Width="104" Height="104">

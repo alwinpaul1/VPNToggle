@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.Linq;
 using System.Drawing.Drawing2D;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -38,6 +39,9 @@ public sealed class AppController : IDisposable
     bool wantConnected;
     int reconnectAttempts;
     DispatcherTimer? reconnectTimer;
+    static readonly HttpClient Http = CreateHttp();
+    readonly string currentVersion = RunningVersion();
+    bool checkingForUpdates;
 
     static readonly TimeSpan[] ReconnectDelays =
         { TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(5) };
@@ -57,6 +61,9 @@ public sealed class AppController : IDisposable
         card.LaunchAtLogin = () => Startup.Enabled;
         card.SetLaunchAtLogin = on => Startup.Enabled = on;
         card.CurrentIp = () => state == VpnState.Connected ? ip : null;
+        card.CheckForUpdatesRequested += () => CheckForUpdates(manual: true);
+        card.UpdateRequested += OpenUpdatePage;
+        card.UpdateDismissed += DismissUpdate;
         vm.AutoReconnectChanged += on =>
         {
             settings.AutoReconnect = on;
@@ -98,8 +105,20 @@ public sealed class AppController : IDisposable
                 ui.BeginInvoke(async () => { await Task.Delay(8000); Refresh(force: true); });
         };
 
+        var firstUpdateCheck = true;
+        var updates = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        updates.Tick += (_, _) =>
+        {
+            updates.Interval = TimeSpan.FromHours(1);
+            var due = firstUpdateCheck || UpdatePolicy.ShouldCheck(DateTime.UtcNow, settings.UpdateLastCheck);
+            firstUpdateCheck = false;
+            if (due) CheckForUpdates(manual: false);
+        };
+        updates.Start();
+
         Log.Write("app started");
         Render();
+        RenderUpdate();
         Refresh();
         if (Cisco.Cli == null)
             Dialogs.Message("Cisco Secure Client not found", "Install Cisco Secure Client (or AnyConnect) first; VPNToggle drives its vpncli.exe.");
@@ -159,6 +178,102 @@ public sealed class AppController : IDisposable
         Log.Write("app quit");
         Dispose();
         System.Windows.Application.Current.Shutdown();
+    }
+
+    static HttpClient CreateHttp()
+    {
+        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(UpdatePolicy.UserAgent);
+        http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        return http;
+    }
+
+    static string RunningVersion()
+    {
+        var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        if (v == null || (v.Major == 0 && v.Minor == 0 && v.Build <= 0)) return "";
+        return v.Build > 0 ? $"{v.Major}.{v.Minor}.{v.Build}" : $"{v.Major}.{v.Minor}";
+    }
+
+    void RenderUpdate()
+    {
+        var latest = settings.UpdateLatestTag;
+        var shows = latest != null && UpdatePolicy.ShowsBanner(latest, currentVersion, settings.UpdateDismissedTag);
+        vm.UpdateDetail = shows && latest != null ? $"Version {UpdatePolicy.DisplayVersion(latest)} · you have {currentVersion}" : "";
+        vm.UpdateAvailable = shows;
+    }
+
+    void OpenUpdatePage()
+    {
+        card.HideCard();
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(UpdatePolicy.Page(settings.UpdateLatestPage)) { UseShellExecute = true });
+        }
+        catch (Exception e)
+        {
+            Log.Write($"could not open the release page: {e.Message}");
+        }
+    }
+
+    void DismissUpdate()
+    {
+        settings.UpdateDismissedTag = settings.UpdateLatestTag;
+        settings.Save();
+        RenderUpdate();
+    }
+
+    async void CheckForUpdates(bool manual)
+    {
+        if (checkingForUpdates) return;
+        checkingForUpdates = true;
+        ReleaseInfo? release = null;
+        var failure = "GitHub's answer could not be read.";
+        try
+        {
+            using var response = await Http.GetAsync(UpdatePolicy.LatestReleaseApi);
+            if (response.IsSuccessStatusCode) release = UpdatePolicy.ReleaseFromJson(await response.Content.ReadAsStringAsync());
+            else failure = $"GitHub answered with status {(int)response.StatusCode}.";
+        }
+        catch (Exception e)
+        {
+            failure = e.Message;
+        }
+        finally
+        {
+            checkingForUpdates = false;
+        }
+
+        if (release == null)
+        {
+            Log.Write($"update check failed: {failure}");
+            if (manual)
+            {
+                card.HideCard();
+                Dialogs.Message("Could not check for updates", failure);
+            }
+            return;
+        }
+
+        var newer = UpdatePolicy.IsNewer(release.Tag, currentVersion);
+        Log.Write($"update check: latest {release.Tag}, running {(currentVersion.Length == 0 ? "unknown" : currentVersion)}");
+        settings.UpdateLastCheck = DateTime.UtcNow;
+        settings.UpdateLatestTag = release.Tag;
+        settings.UpdateLatestPage = release.Page;
+        if (manual && newer) settings.UpdateDismissedTag = null;
+        try { settings.Save(); }
+        catch (Exception e) { Log.Write($"could not save settings: {e.Message}"); }
+        RenderUpdate();
+        if (!manual) return;
+        if (newer)
+        {
+            if (!card.IsVisible) OpenCard(nearTray: true);
+            return;
+        }
+        card.HideCard();
+        Dialogs.Message("You're up to date", currentVersion.Length == 0
+            ? $"The latest release is VPNToggle {UpdatePolicy.DisplayVersion(release.Tag)}."
+            : $"VPNToggle {currentVersion} is the latest version.");
     }
 
     void Notify(string title, string body) => tray.ShowBalloonTip(5000, title, body, ToolTipIcon.None);

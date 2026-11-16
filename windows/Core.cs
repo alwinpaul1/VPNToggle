@@ -27,6 +27,10 @@ public sealed class Settings
     public string Username { get; set; } = "";
     public bool AutoReconnect { get; set; } = true;
     public bool ShownTrayTip { get; set; }
+    public DateTime? UpdateLastCheck { get; set; }
+    public string? UpdateLatestTag { get; set; }
+    public string? UpdateLatestPage { get; set; }
+    public string? UpdateDismissedTag { get; set; }
 
     static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VPNToggle");
     static string FilePath => Path.Combine(Dir, "settings.json");
