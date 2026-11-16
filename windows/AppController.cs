@@ -243,18 +243,20 @@ public sealed class AppController : IDisposable
                 e => ui.BeginInvoke(() => SetUpdatePhase(UpdatePolicy.Next(updatePhase, e))));
             ui.BeginInvoke(() =>
             {
-                if (refusal == null && SelfUpdate.StartNew(exe))
+                if (refusal == null)
                 {
-                    SetUpdatePhase(UpdatePhase.Relaunching);
-                    Log.Write("update: installed, restarting");
-                    Quit();
+                    try
+                    {
+                        Log.Write("update: installed, restarting");
+                        Dispose();
+                    }
+                    catch { }
+                    Environment.Exit(0);
                     return;
                 }
                 SetUpdatePhase(UpdatePolicy.Next(updatePhase, UpdateEvent.Reset));
-                var reason = refusal == null
-                    ? "The new version is in place but could not be started. Start VPNToggle again by hand."
-                    : UpdatePolicy.Message(refusal);
-                Log.Write($"update: not installed: {refusal?.Kind.ToString() ?? "start failed"} {refusal?.Detail}".TrimEnd());
+                var reason = UpdatePolicy.Message(refusal);
+                Log.Write($"update: not installed: {refusal.Kind} {refusal.Detail}".TrimEnd());
                 card.HideCard();
                 var answer = System.Windows.MessageBox.Show(reason + "\n\nOpen the release page to download it yourself?",
                     "The update was not installed", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);

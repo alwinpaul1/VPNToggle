@@ -11,6 +11,7 @@ $appFolder = Join-Path $work "app"
 $inst = Join-Path $appFolder "VPNToggle.exe"
 $appLog = Join-Path $env:LOCALAPPDATA "VPNToggle\VPNToggle.log"
 $script:server = $null
+$began = Get-Date
 
 function Cleanup {
     Get-Process VPNToggle -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $inst } | ForEach-Object { try { $_.Kill() } catch { } }
@@ -20,6 +21,11 @@ function Cleanup {
 function Fail([string]$message) {
     Write-Host "FAIL update: $message"
     if (Test-Path $appLog) { Get-Content $appLog | Write-Host }
+    try {
+        Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = $began } -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -in ".NET Runtime", "Application Error", "Windows Error Reporting" } |
+            Select-Object -First 6 | ForEach-Object { Write-Host "--- $($_.ProviderName) $($_.TimeCreated)"; Write-Host $_.Message }
+    } catch { Write-Host "no event log entries: $_" }
     Cleanup
     exit 1
 }

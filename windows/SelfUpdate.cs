@@ -91,7 +91,43 @@ public static class SelfUpdate
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
+    static Process? StartWaiter(string exe)
+    {
+        try
+        {
+            var shell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            var command = "Wait-Process -Id $env:VPNTOGGLE_WAIT_FOR -ErrorAction SilentlyContinue; " +
+                "Start-Process -FilePath $env:VPNTOGGLE_START -ArgumentList $env:VPNTOGGLE_START_FLAG";
+            var psi = new ProcessStartInfo(shell, "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" + command + "\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            psi.Environment["VPNTOGGLE_WAIT_FOR"] = Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            psi.Environment["VPNTOGGLE_START"] = exe;
+            psi.Environment["VPNTOGGLE_START_FLAG"] = UpdatePolicy.UpdatedFlag;
+            psi.Environment.Remove(UpdatePolicy.TestApiVariable);
+            return Process.Start(psi);
+        }
+        catch (Exception e)
+        {
+            Log.Write($"update: could not prepare the restart: {e.Message}");
+            return null;
+        }
+    }
+
+    static void Stop(Process? waiter)
+    {
+        try { if (waiter != null && !waiter.HasExited) waiter.Kill(); } catch { }
+    }
+
     public static UpdateRefusal? Run(string exe, string currentVersion, UpdateSource source, Action<UpdateEvent>? progress = null)
+    {
+        try { return RunSteps(exe, currentVersion, source, progress); }
+        catch (Exception e) { return new UpdateRefusal(UpdateRefusalKind.SwapFailed, e.Message); }
+    }
+
+    static UpdateRefusal? RunSteps(string exe, string currentVersion, UpdateSource source, Action<UpdateEvent>? progress)
     {
         var folder = Path.GetDirectoryName(exe);
         if (folder == null) return new UpdateRefusal(UpdateRefusalKind.NotWritable);
@@ -121,39 +157,31 @@ public static class SelfUpdate
             progress?.Invoke(UpdateEvent.Verified);
 
             var old = UpdatePolicy.OldPath(exe);
+            var waiter = StartWaiter(exe);
+            if (waiter == null) return new UpdateRefusal(UpdateRefusalKind.SwapFailed, "The restart could not be prepared.");
             try
             {
                 Remove(old);
                 File.Move(exe, old);
             }
-            catch (Exception e) { return new UpdateRefusal(UpdateRefusalKind.SwapFailed, e.Message); }
+            catch (Exception e)
+            {
+                Stop(waiter);
+                return new UpdateRefusal(UpdateRefusalKind.SwapFailed, e.Message);
+            }
             try { File.Move(fresh, exe); }
             catch (Exception e)
             {
                 try { File.Move(old, exe); } catch { }
+                Stop(waiter);
                 return new UpdateRefusal(UpdateRefusalKind.SwapFailed, e.Message);
             }
-            progress?.Invoke(UpdateEvent.Installed);
             return null;
         }
         finally
         {
             Remove(json);
             Remove(fresh);
-        }
-    }
-
-    public static bool StartNew(string exe)
-    {
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo(exe, UpdatePolicy.UpdatedFlag) { UseShellExecute = true });
-            return p != null;
-        }
-        catch (Exception e)
-        {
-            Log.Write($"update: could not start the new version: {e.Message}");
-            return false;
         }
     }
 
@@ -177,17 +205,25 @@ public static class SelfUpdate
     public static int? RunTestMode(string[] args)
     {
         if (Array.IndexOf(args, UpdatePolicy.TestFlag) < 0) return null;
-        var exe = Environment.ProcessPath;
-        if (exe == null) return 4;
-        var source = UpdatePolicy.Source(Environment.GetEnvironmentVariable(UpdatePolicy.TestApiVariable));
-        var version = FileVersion(exe) ?? "";
-        var refusal = Run(exe, version, source);
-        if (refusal != null)
+        try
         {
-            Log.Write($"update test: not installed: {refusal.Kind} {refusal.Detail}".TrimEnd());
-            return 3;
+            var exe = Environment.ProcessPath;
+            if (exe == null) return 4;
+            var source = UpdatePolicy.Source(Environment.GetEnvironmentVariable(UpdatePolicy.TestApiVariable));
+            var version = FileVersion(exe) ?? "";
+            var refusal = Run(exe, version, source);
+            if (refusal != null)
+            {
+                Log.Write($"update test: not installed: {refusal.Kind} {refusal.Detail}".TrimEnd());
+                return 3;
+            }
+            Log.Write("update test: installed, restarting");
+            return 0;
         }
-        Log.Write("update test: installed, restarting");
-        return StartNew(exe) ? 0 : 5;
+        catch (Exception e)
+        {
+            try { Log.Write($"update test: failed: {e}"); } catch { }
+            return 6;
+        }
     }
 }
