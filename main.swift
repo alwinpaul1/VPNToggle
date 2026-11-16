@@ -215,7 +215,27 @@ func runVPN(_ args: [String]) -> String {
     return cancelled ? "" : String(decoding: data, as: UTF8.self)
 }
 
-func readStatus() -> (state: VPNState, ip: String?, seconds: Int?) {
+var sessionFailures = 0
+
+func readStatus(onState: @escaping (VPNState) -> Void = { _ in }) -> (state: VPNState, ip: String?, seconds: Int?) {
+    statusLock.lock(); let allowed = StatusPolicy.sessionAllowed(failures: sessionFailures); statusLock.unlock()
+    if allowed {
+        var session: Process?
+        let fast = StatusSession.read(cli: vpnCLI, onStart: { p in
+            session = p
+            statusLock.lock(); statusProcess = p; statusLock.unlock()
+        }, onState: { state, _ in onState(state) })
+        statusLock.lock()
+        if let session, statusProcess === session { statusProcess = nil }
+        let cancelled = session != nil && cancelledProcess === session
+        if cancelled { cancelledProcess = nil }
+        let usable = StatusPolicy.sessionUsable(fast?.reading)
+        if !cancelled { sessionFailures = usable ? 0 : sessionFailures + 1 }
+        statusLock.unlock()
+        if cancelled { return (.unknown, nil, nil) }
+        if usable, let r = fast?.reading, let state = r.state { return (state, r.ip, r.seconds) }
+        logEvent("fast status check gave no usable reading; using vpn stats")
+    }
     let output = runVPN(["stats"])
     guard !output.isEmpty else { return (.unknown, nil, nil) }
     let r = StatusPolicy.reading(fromStats: output)
@@ -753,6 +773,7 @@ final class VPNModel: ObservableObject {
     @Published var dropped = false
     @Published var autoReconnect = true
     @Published var launchAtLogin = false
+    @Published var nvmPause = NVMPause.Status.off
     @Published var autoTwoFactor = false
     @Published var updateVersion: String?
     @Published var step: String?
@@ -765,6 +786,7 @@ final class VPNModel: ObservableObject {
     var onCredentials: () -> Void = {}
     var onAutoReconnect: () -> Void = {}
     var onLaunchAtLogin: () -> Void = {}
+    var onNVMPause: () -> Void = {}
     var onOpenLog: () -> Void = {}
     var onCheckForUpdates: () -> Void = {}
     var onOpenUpdate: () -> Void = {}
@@ -839,6 +861,10 @@ struct CardView: View {
             Menu {
                 Button("Credentials…", systemImage: "key", action: m.onCredentials)
                 Toggle("Launch at Login", systemImage: "power", isOn: Binding(get: { m.launchAtLogin }, set: { _ in m.onLaunchAtLogin() }))
+                Toggle(isOn: Binding(get: { m.nvmPause != .off }, set: { _ in m.onNVMPause() })) {
+                    Text(NVMPause.title)
+                    Text(NVMPause.note(m.nvmPause))
+                }
                 if let ip = m.ip, m.connected {
                     Button("Copy IP Address", systemImage: "doc.on.doc") {
                         NSPasteboard.general.clearContents()
@@ -1170,6 +1196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         model.onOpenLog = { NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/VPNToggle.log")) }
         model.onCheckForUpdates = { [weak self] in self?.checkForUpdates(manual: true) }
+        model.onNVMPause = { [weak self] in self?.toggleNVMPause() }
         model.onOpenUpdate = { [weak self] in self?.openUpdatePage() }
         model.onDismissUpdate = { [weak self] in self?.dismissUpdate() }
 
@@ -1276,6 +1303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func openCard() {
         guard let f = iconFrame else { return }
         model.launchAtLogin = LoginItem.enabled
+        refreshNVMPause()
         model.cardVisible = true
         render()
         refresh(force: vpnIP == nil)
@@ -1285,6 +1313,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard clickMonitor == nil else { return }
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closeCard()
+        }
+    }
+
+    func refreshNVMPause() {
+        DispatchQueue.global().async {
+            let status = NVMPause.currentStatus()
+            DispatchQueue.main.async { self.model.set(\.nvmPause, status) }
+        }
+    }
+
+    func toggleNVMPause() {
+        let install = NVMPause.installs(from: model.nvmPause)
+        let directory = (Bundle.main.resourcePath ?? "") + "/nvm-pause"
+        guard FileManager.default.fileExists(atPath: directory + "/install.sh") else {
+            showError("This copy of VPNToggle has no nvm-pause folder in its Resources.", title: "Network Visibility pause")
+            return
+        }
+        closeCard()
+        DispatchQueue.global().async {
+            let failure = NVMPause.change(install: install, directory: directory)
+            let status = NVMPause.currentStatus()
+            DispatchQueue.main.async {
+                self.model.set(\.nvmPause, status)
+                logEvent("network visibility pause \(install ? "install" : "uninstall"): \(failure ?? "done"), now \(status)")
+                if let failure { self.showError(failure, title: "Network Visibility pause") }
+            }
         }
     }
 
@@ -1332,7 +1386,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         checking = true
         nextSlowCheck = Date().addingTimeInterval(StatusPolicy.cliInterval(state: state, watchingInterfaces: watcher != nil))
         queue.async {
-            let r = self.working ? nil : readStatus()
+            let r = self.working ? nil : readStatus { early in
+                guard early == .connected else { return }
+                DispatchQueue.main.async {
+                    guard self.checking, !self.working, self.state != .connected else { return }
+                    self.apply(.connected, learned: nil)
+                }
+            }
             DispatchQueue.main.async {
                 self.checking = false
                 if let r, !self.working {

@@ -74,6 +74,8 @@ struct ConnectPolicyTests {
 
         updateChecks()
         StatusPolicyTests.run()
+        StatusSessionTests.run()
+        NVMPauseTests.run()
 
         print("\(passed) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)

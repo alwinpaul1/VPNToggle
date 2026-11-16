@@ -102,6 +102,8 @@ public partial class CardWindow : Window
     public Func<bool> LaunchAtLogin = () => false;
     public Action<bool> SetLaunchAtLogin = _ => { };
     public Func<string?> CurrentIp = () => null;
+    public Func<NvmStatus> NvmPauseStatus = () => NvmStatus.Off;
+    public Action<NvmStatus> NvmPauseRequested = _ => { };
     public DateTime HiddenAt { get; private set; }
     readonly CardViewModel vm;
     bool spinning;
@@ -152,6 +154,12 @@ public partial class CardWindow : Window
         }
         Item("Credentials…", () => { HideCard(); CredentialsRequested?.Invoke(); });
         Item("Launch at startup", () => SetLaunchAtLogin(!LaunchAtLogin()), LaunchAtLogin());
+        var pause = NvmPauseStatus();
+        var pauseItem = Item(NvmPolicy.Title, () => { HideCard(); NvmPauseRequested(pause); }, pause != NvmStatus.Off);
+        var pauseText = new StackPanel();
+        pauseText.Children.Add(new TextBlock { Text = NvmPolicy.Title });
+        pauseText.Children.Add(new TextBlock { Text = NvmPolicy.Note(pause), FontSize = 11, Opacity = 0.7 });
+        pauseItem.Header = pauseText;
         if (CurrentIp() is { } ip) Item("Copy IP address", () => Clipboard.SetText(ip));
         Item("Show log", () => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Log.FilePath) { UseShellExecute = true }));
         Item("Check for updates…", () => CheckForUpdatesRequested?.Invoke());

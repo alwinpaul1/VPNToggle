@@ -9,6 +9,8 @@ public enum VpnState { Unknown, Connected, Disconnected, Busy }
 
 public readonly record struct StatusReading(VpnState? State, string? Ip, int? Seconds);
 
+public enum SessionStep { Wait, AskAgain, Done, CloseBlind }
+
 public static class StatusPolicy
 {
     public static readonly TimeSpan SettledPoll = TimeSpan.FromSeconds(30);
@@ -47,6 +49,49 @@ public static class StatusPolicy
         }
         return new StatusReading(state ?? StateFromBanner(output), ip, seconds);
     }
+
+    public const string SessionRegistered = "registered with local VPN subsystem";
+    public const string SessionRequest = "stats";
+    public const string SessionReplyStart = "[ Connection Information ]";
+    public const string SessionPrompt = "VPN>";
+    public const int SessionRequestLimit = 2;
+    public const int SessionFailureLimit = 2;
+    public static readonly TimeSpan SessionTimeout = TimeSpan.FromSeconds(4);
+    public static readonly TimeSpan SessionBlindAfter = TimeSpan.FromSeconds(1);
+
+    public static VpnState? RegisteredState(string output)
+    {
+        var marker = output.IndexOf(SessionRegistered, StringComparison.Ordinal);
+        return marker < 0 ? null : StateFromBanner(output[..marker]);
+    }
+
+    public static int SessionReplies(string output) =>
+        output.Split(SessionReplyStart).Skip(1).Count(part => part.Contains(SessionPrompt));
+
+    public static StatusReading ReadingFromSession(string output)
+    {
+        var registered = RegisteredState(output);
+        if (registered is { } state && state != VpnState.Connected) return new StatusReading(state, null, null);
+        return ReadingFromStats(output);
+    }
+
+    public static SessionStep SessionStepFor(string output, int sent, TimeSpan elapsed, int limit = SessionRequestLimit)
+    {
+        var registered = RegisteredState(output);
+        if (registered == null) return elapsed >= SessionBlindAfter ? SessionStep.CloseBlind : SessionStep.Wait;
+        if (registered != VpnState.Connected) return SessionStep.Done;
+        if (SessionReplies(output) < sent) return SessionStep.Wait;
+        var r = ReadingFromSession(output);
+        return r.State == VpnState.Connected && r.Seconds == null && sent < limit ? SessionStep.AskAgain : SessionStep.Done;
+    }
+
+    public static bool SessionUsable(StatusReading? reading)
+    {
+        if (reading is not { State: { } state } r || state == VpnState.Unknown) return false;
+        return state != VpnState.Connected || (r.Ip != null && r.Seconds != null);
+    }
+
+    public static bool SessionAllowed(int failures) => failures < SessionFailureLimit;
 
     public static int? SecondsFromDuration(string text)
     {

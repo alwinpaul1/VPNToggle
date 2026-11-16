@@ -135,28 +135,35 @@ For scripts and shortcuts: `vpntoggle://connect`, `vpntoggle://disconnect`,
 Log files: Windows `%LOCALAPPDATA%\VPNToggle\VPNToggle.log`, macOS `~/Library/Logs/VPNToggle.log`.
 Error pop-ups have a **Copy details** button with Cisco's full output.
 
-### Mac slow? Cisco's `acnvmagent` growing (macOS, optional)
+### Computer slow? Pause Cisco's Network Visibility agent (optional)
 
 Cisco Secure Client can install a Network Visibility Module whose agent, `acnvmagent`, looks
-at every network connection. On a Mac that ran for weeks it was seen using 70% CPU under
-heavy traffic and growing past 1.3 GB of memory. It is separate from the VPN, so
-restarting it does not drop the tunnel; Cisco's `vpnagentd` starts it again within seconds.
+at every network connection. Cisco starts it at high priority and it can use a whole CPU core
+from its first second, connected or not. It is separate from the VPN.
 
-`nvm-watchdog/` keeps it small. It checks every 30 seconds and restarts the agent when it
-passes 400 MB, plus once a day at the first check after midnight. It also gives the agent
-background priority, so on Apple silicon it runs on the efficiency cores and stops slowing
-down your apps. The short interval matters: Cisco starts a fresh agent at full priority
-(nice -20), and the agent can spin at 60-90% CPU from its first second, so a restart alone
-does not cure high CPU. Background priority is what keeps it off your apps. It logs to
-`/var/log/nvm-watchdog.log` and starts that log over past 64 KB.
+**⋯ → Pause Cisco Network Visibility** keeps that agent suspended. It is off by default and
+asks for an administrator password once. While it is on, the agent uses no CPU and
+Network Visibility sends no reports. The module stays installed, and only the process named
+exactly `acnvmagent` is touched. Turning the option off resumes the agent and removes the helper.
+The menu line shows whether the pause is active.
 
-```sh
-sudo sh nvm-watchdog/install.sh     # install (runs the first check at once)
-sudo sh nvm-watchdog/uninstall.sh   # remove
-```
+- **macOS:** a LaunchDaemon (`local.vpn-toggle`, script `/usr/local/sbin/vpn-toggle-watch.sh`)
+  checks every second and sends `SIGSTOP` to any `acnvmagent` that is running, including one
+  Cisco starts again later. It logs to `/var/log/vpn-toggle.log`. Without the app:
 
-Change the limit with `CAP_MB` at the top of `nvm-watchdog/nvm-watchdog.sh` before installing.
-If Activity Monitor shows no `acnvmagent`, your Cisco install has no NVM and you do not need this.
+  ```sh
+  sudo sh nvm-pause/install.sh     # install and start
+  sudo sh nvm-pause/uninstall.sh   # resume the agent and remove
+  sh nvm-pause/vpn-toggle-watch.sh --list   # show what it would stop; sends nothing
+  ```
+
+  Installing also removes the older `nvm-watchdog` if it is present.
+- **Windows:** a scheduled task (`VPNToggle NVM Pause`, runs as SYSTEM from a copy of the app in
+  `%ProgramFiles%\VPNToggle`) suspends `acnvmagent.exe` the same way. It logs to
+  `%ProgramData%\VPNToggle\nvm-pause.log`.
+
+A suspended agent cannot answer a normal stop request, so turn the pause off before you
+update or uninstall Cisco Secure Client by hand.
 
 ### Uninstall
 

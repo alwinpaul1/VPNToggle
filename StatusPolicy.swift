@@ -44,6 +44,50 @@ enum StatusPolicy {
         return r
     }
 
+    static let sessionRegistered = "registered with local VPN subsystem"
+    static let sessionRequest = "stats\n"
+    static let sessionReplyStart = "[ Connection Information ]"
+    static let sessionPrompt = "VPN>"
+    static let sessionRequestLimit = 2
+    static let sessionTimeout: TimeInterval = 4
+    static let sessionFailureLimit = 2
+
+    enum SessionStep: Equatable { case wait, askAgain, done }
+
+    static func registeredState(inSession output: String) -> VPNState? {
+        guard let marker = output.range(of: sessionRegistered) else { return nil }
+        return state(fromBanner: String(output[..<marker.lowerBound]))
+    }
+
+    static func sessionReplies(in output: String) -> Int {
+        output.components(separatedBy: sessionReplyStart).dropFirst().filter { $0.contains(sessionPrompt) }.count
+    }
+
+    static func reading(fromSession output: String) -> StatusReading {
+        var r = reading(fromStats: output)
+        if let registered = registeredState(inSession: output), registered != .connected {
+            r = StatusReading(state: registered, ip: nil, seconds: nil)
+        }
+        return r
+    }
+
+    static func sessionStep(output: String, sent: Int, limit: Int = sessionRequestLimit) -> SessionStep {
+        guard let registered = registeredState(inSession: output) else { return .wait }
+        guard registered == .connected else { return .done }
+        guard sessionReplies(in: output) >= sent else { return .wait }
+        let r = reading(fromSession: output)
+        return r.state == .connected && r.seconds == nil && sent < limit ? .askAgain : .done
+    }
+
+    static func sessionUsable(_ reading: StatusReading?) -> Bool {
+        guard let reading, let state = reading.state, state != .unknown else { return false }
+        return state != .connected || (reading.ip != nil && reading.seconds != nil)
+    }
+
+    static func sessionAllowed(failures: Int) -> Bool {
+        failures < sessionFailureLimit
+    }
+
     static func seconds(fromDuration text: String) -> Int? {
         let hms = text.split(separator: " ").last?.split(separator: ":").compactMap { Int($0) } ?? []
         guard hms.count == 3 else { return nil }

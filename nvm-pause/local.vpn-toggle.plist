@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>local.nvm-watchdog</string>
+  <string>local.vpn-toggle</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
-    <string>/usr/local/sbin/nvm-watchdog.sh</string>
+    <string>/usr/local/sbin/vpn-toggle-watch.sh</string>
   </array>
-  <key>StartInterval</key>
-  <integer>30</integer>
   <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
   <true/>
   <key>LowPriorityIO</key>
   <true/>

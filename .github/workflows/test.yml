@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./tests/run.sh
-      - run: swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift -o VPNToggle -framework Cocoa -framework ServiceManagement
+      - run: swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift StatusSession.swift NVMPause.swift -o VPNToggle -framework Cocoa -framework ServiceManagement
 
   windows:
     runs-on: windows-latest
@@ -30,3 +30,26 @@ jobs:
           $v = [System.Reflection.AssemblyName]::GetAssemblyName($dll.FullName).Version
           Write-Output "tag $tag, assembly $v"
           if ([version]$tag -ne [version]"$($v.Major).$($v.Minor)") { exit 1 }
+
+  macos-integration:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: brew install librsvg
+      - run: sh tests/integration-macos.sh
+
+  windows-integration:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - run: dotnet publish -c Release -o publish
+        working-directory: windows
+      - shell: pwsh
+        run: ./tests/integration-windows.ps1

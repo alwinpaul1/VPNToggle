@@ -71,6 +71,8 @@ public sealed class AppController : IDisposable
         card.LaunchAtLogin = () => Startup.Enabled;
         card.SetLaunchAtLogin = on => Startup.Enabled = on;
         card.CurrentIp = () => state == VpnState.Connected ? ip : null;
+        card.NvmPauseStatus = NvmPause.CurrentStatus;
+        card.NvmPauseRequested = ChangeNvmPause;
         card.CheckForUpdatesRequested += () => CheckForUpdates(manual: true);
         card.UpdateRequested += OpenUpdatePage;
         card.UpdateDismissed += DismissUpdate;
@@ -315,7 +317,14 @@ public sealed class AppController : IDisposable
         nextSlowCheck = DateTime.Now + StatusPolicy.CliInterval(state, WatchingInterfaces);
         Task.Run(() =>
         {
-            (VpnState state, string? ip, int? seconds)? reading = working ? null : Cisco.Status();
+            (VpnState state, string? ip, int? seconds)? reading = working ? null : Cisco.Status(early =>
+            {
+                if (early != VpnState.Connected) return;
+                ui.BeginInvoke(() =>
+                {
+                    if (checking && !working && state != VpnState.Connected) Apply(VpnState.Connected, null);
+                });
+            });
             ui.BeginInvoke(() =>
             {
                 checking = false;
@@ -346,6 +355,18 @@ public sealed class AppController : IDisposable
         pair = (tint, outline);
         brushes[c] = pair;
         return pair;
+    }
+
+    void ChangeNvmPause(NvmStatus current)
+    {
+        var install = NvmPolicy.Installs(current);
+        Task.Run(() =>
+        {
+            var failure = NvmPause.Change(install);
+            var now = NvmPause.CurrentStatus();
+            Log.Write($"network visibility pause {(install ? "install" : "uninstall")}: {failure ?? "done"}, now {now}");
+            if (failure != null) ui.BeginInvoke(() => Dialogs.Message("Network Visibility pause", failure));
+        });
     }
 
     void Apply(VpnState s, (string? ip, int? seconds)? learned)

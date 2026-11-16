@@ -358,12 +358,99 @@ public static class Cisco
 
     public static VpnState State() => StatusPolicy.StateFromBanner(Run("state")) ?? VpnState.Unknown;
 
-    public static (VpnState state, string? ip, int? seconds) Status()
+    static int sessionFailures;
+    static bool sessionBlind;
+
+    static (StatusReading? reading, bool cancelled, bool blind) SessionStatus(Action<VpnState>? onState)
     {
+        var psi = new ProcessStartInfo(Cli!, "-s")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        Process p;
+        try { p = Process.Start(psi)!; } catch { return (null, false, false); }
+        bool blind;
+        lock (statusLock) { statusProcess = p; blind = sessionBlind; }
+        try
+        {
+            var stdin = p.StandardInput;
+            var open = true;
+            void Send() { try { stdin.Write(StatusPolicy.SessionRequest + "\n"); stdin.Flush(); } catch { } }
+            void Close() { if (!open) return; open = false; try { stdin.Close(); } catch { } }
+            Send();
+            if (blind) Close();
+            var text = new StringBuilder();
+            var buf = new char[4096];
+            var sent = 1;
+            var announced = false;
+            var ended = false;
+            var watch = Stopwatch.StartNew();
+            Task<int>? read = null;
+            while (watch.Elapsed < StatusPolicy.SessionTimeout)
+            {
+                read ??= p.StandardOutput.ReadAsync(buf, 0, buf.Length);
+                var n = -1;
+                try { if (read.Wait(100)) n = read.Result; } catch { n = 0; }
+                if (n == 0) { ended = true; break; }
+                if (n > 0) { read = null; text.Append(buf, 0, n); }
+                var all = text.ToString();
+                if (!announced && StatusPolicy.RegisteredState(all) is { } early)
+                {
+                    announced = true;
+                    onState?.Invoke(early);
+                }
+                if (!open) continue;
+                switch (StatusPolicy.SessionStepFor(all, sent, watch.Elapsed))
+                {
+                    case SessionStep.AskAgain: sent++; Send(); break;
+                    case SessionStep.Done: Close(); break;
+                    case SessionStep.CloseBlind: blind = true; Close(); break;
+                }
+            }
+            Close();
+            if (!ended) { try { p.Kill(); } catch { } }
+            bool cancelled;
+            lock (statusLock) cancelled = cancelledProcess == p;
+            if (cancelled) return (null, true, blind);
+            if (!ended) return (null, false, blind);
+            return (StatusPolicy.ReadingFromSession(text.ToString()), false, blind);
+        }
+        finally
+        {
+            lock (statusLock)
+            {
+                if (statusProcess == p) statusProcess = null;
+                if (cancelledProcess == p) cancelledProcess = null;
+            }
+            var done = p;
+            _ = Task.Delay(2000).ContinueWith(_ => { try { if (!done.HasExited) done.Kill(); } catch { } try { done.Dispose(); } catch { } });
+        }
+    }
+
+    public static (VpnState state, string? ip, int? seconds) Status(Action<VpnState>? onState = null)
+    {
+        bool allowed;
+        lock (statusLock) allowed = StatusPolicy.SessionAllowed(sessionFailures);
+        if (allowed && Cli != null)
+        {
+            var (reading, cancelled, blind) = SessionStatus(onState);
+            if (cancelled) return (VpnState.Unknown, null, null);
+            var usable = StatusPolicy.SessionUsable(reading);
+            lock (statusLock)
+            {
+                sessionFailures = usable ? 0 : sessionFailures + 1;
+                if (blind) sessionBlind = true;
+            }
+            if (usable && reading is { State: { } state } r) return (state, r.Ip, r.Seconds);
+            Log.Write("fast status check gave no usable reading; using vpncli stats");
+        }
         var output = Run("stats");
         if (output.Length == 0) return (VpnState.Unknown, null, null);
-        var r = StatusPolicy.ReadingFromStats(output);
-        return (r.State ?? State(), r.Ip, r.Seconds);
+        var slow = StatusPolicy.ReadingFromStats(output);
+        return (slow.State ?? State(), slow.Ip, slow.Seconds);
     }
 
     /// Returns true when a Cisco window was running (and has been closed).

@@ -2,6 +2,8 @@
 # Builds VPNToggle.app and installs it to ~/Applications.
 set -e
 cd "$(dirname "$0")"
+INSTALL=1
+if [ "$1" = "--no-install" ]; then INSTALL=0; fi
 # Version from the newest release tag (v1.4 -> 1.4); build number = commit count.
 VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')
 VERSION=${VERSION:-0.0}
@@ -15,7 +17,9 @@ for s in 16 32 128 256 512; do
   rsvg-convert -w $((s*2)) -h $((s*2)) icon/icon.svg -o $ICONSET/icon_${s}x${s}@2x.png
 done
 iconutil -c icns $ICONSET -o $APP/Contents/Resources/AppIcon.icns
-swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift -o $APP/Contents/MacOS/VPNToggle -framework Cocoa -framework ServiceManagement
+swiftc -O main.swift ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift StatusSession.swift NVMPause.swift -o $APP/Contents/MacOS/VPNToggle -framework Cocoa -framework ServiceManagement
+mkdir -p $APP/Contents/Resources/nvm-pause
+cp nvm-pause/vpn-toggle-watch.sh nvm-pause/local.vpn-toggle.plist nvm-pause/install.sh nvm-pause/uninstall.sh $APP/Contents/Resources/nvm-pause/
 cat > $APP/Contents/Info.plist <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -39,6 +43,10 @@ PLIST
 # A stable local identity keeps the Keychain "Always Allow" valid across rebuilds; ad-hoc otherwise.
 IDENTITY=$(security find-identity -p codesigning 2>/dev/null | awk '/VPNToggle Local Signing/{print $2; exit}')
 codesign --force --sign "${IDENTITY:--}" $APP
+if [ $INSTALL = 0 ]; then
+  echo "Built $APP ($VERSION, build $BUILD)"
+  exit 0
+fi
 mkdir -p ~/Applications
 rm -rf ~/Applications/VPNToggle.app
 cp -R $APP ~/Applications/

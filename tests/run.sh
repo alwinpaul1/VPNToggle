@@ -3,5 +3,6 @@ set -e
 cd "$(dirname "$0")/.."
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
-swiftc -parse-as-library ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift tests/ConnectPolicyTests.swift tests/StatusPolicyTests.swift -o "$OUT/tests"
+swiftc -parse-as-library ConnectPolicy.swift UpdatePolicy.swift StatusPolicy.swift StatusSession.swift NVMPause.swift tests/ConnectPolicyTests.swift tests/StatusPolicyTests.swift tests/StatusSessionTests.swift tests/NVMPauseTests.swift -o "$OUT/tests"
 "$OUT/tests"
+sh tests/nvm-pause-test.sh

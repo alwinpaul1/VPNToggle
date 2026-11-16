@@ -12,6 +12,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>VPNToggle</AssemblyName>
     <RootNamespace>VPNToggle</RootNamespace>
+    <StartupObject>VPNToggle.Program</StartupObject>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
