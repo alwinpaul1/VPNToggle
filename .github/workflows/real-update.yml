@@ -1,0 +1,38 @@
+name: real-update
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - run: dotnet publish -c Release -o publish -p:VPNToggleVersion=1.9.9
+        working-directory: windows
+      - shell: pwsh
+        run: |
+          $latest = (Invoke-RestMethod -Headers @{ 'User-Agent' = 'VPNToggle' } https://api.github.com/repos/alwinpaul1/VPNToggle/releases/latest).tag_name.TrimStart('v')
+          $dir = Join-Path $env:RUNNER_TEMP "app"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $exe = Join-Path $dir "VPNToggle.exe"
+          Copy-Item windows/publish/VPNToggle.exe $exe
+          $log = Join-Path $env:LOCALAPPDATA "VPNToggle\VPNToggle.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          Write-Output "old $((Get-Item $exe).VersionInfo.FileVersion), latest release $latest"
+          $p = Start-Process $exe -ArgumentList "--self-update-test" -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); Get-Content $log -ErrorAction SilentlyContinue; Write-Output "FAIL: update did not finish"; exit 1 }
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline -and -not (Select-String -Path $log -Pattern "update: now running $latest" -Quiet -ErrorAction SilentlyContinue)) { Start-Sleep 1 }
+          Get-Content $log
+          $now = (Get-Item $exe).VersionInfo.FileVersion
+          Write-Output "file version now $now"
+          $running = Get-Process VPNToggle -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
+          $ok = ([version]$now -eq [version]$latest) -and ($null -ne $running) -and (Select-String -Path $log -Pattern "update: now running $latest" -Quiet)
+          Get-Process VPNToggle -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not $ok) { Write-Output "FAIL: real update from GitHub"; exit 1 }
+          Write-Output "ok: 1.9.9 updated itself from the real GitHub release to $latest and restarted"
